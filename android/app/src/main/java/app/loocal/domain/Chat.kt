@@ -21,6 +21,8 @@ data class Chat(
     val messages: List<Message> = emptyList(),
     val isTemporary: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
+    val createdAt: Long = System.currentTimeMillis(),
+    val isPinned: Boolean = false,
 ) {
     /** History title: the first prompt, shortened. */
     val title: String

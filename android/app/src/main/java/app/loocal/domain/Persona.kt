@@ -13,6 +13,7 @@ data class Persona(
 ) {
     companion object {
         const val LIMIT = 3
-        val ICONS = listOf("sparkles", "brain", "book", "pencil", "briefcase", "heart", "leaf", "flame", "moon", "cup")
+        /** Same names as iOS (SF Symbols); the Android UI maps each to a Material icon. */
+        val ICONS = listOf("sparkles", "brain.head.profile", "book.closed", "pencil.line", "briefcase", "heart", "leaf", "flame", "moon", "cup.and.saucer", "graduationcap", "theatermasks", "terminal", "globe", "music.note", "camera")
     }
 }

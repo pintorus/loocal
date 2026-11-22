@@ -1,185 +1,103 @@
 package app.loocal.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import app.loocal.domain.Chat
-import app.loocal.domain.Message
-import app.loocal.domain.Persona
-import app.loocal.domain.Role
+import app.loocal.ui.theme.Appearance
+import app.loocal.ui.theme.LoocalTheme
+import app.loocal.ui.theme.ink
 
+/** Port of iOS `RootView`: the page above, the destination bar below, toasts on top. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun LoocalApp(vm: ChatViewModel) {
+fun LoocalApp(vm: ChatViewModel, onDarkChange: (Boolean) -> Unit) {
     val state by vm.state.collectAsState()
-    Scaffold(bottomBar = { BottomBar(state.tab, vm::select) }) { padding ->
-        // consumeWindowInsets: the bottom bar's space is already reserved, so imePadding
-        // in the chat must not add it again under the keyboard.
-        Box(Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()) {
-            when (state.tab) {
-                Tab.HISTORY -> HistoryScreen(state.chats, vm::open, vm::delete)
-                Tab.CHAT -> ChatScreen(state, vm)
-                Tab.SETTINGS -> SettingsScreen(state, vm)
-            }
-        }
-    }
-    state.error?.let { message ->
-        AlertDialog(onDismissRequest = vm::dismissError, confirmButton = { TextButton(onClick = vm::dismissError) { Text("OK") } }, text = { Text(message) })
-    }
-}
+    var tab by remember { mutableStateOf(Tab.CHAT) }
+    var settingsPage by remember { mutableStateOf(SettingsPage.HOME) }
+    var addingPersona by remember { mutableStateOf(false) }
 
-/** Three label-free icons, as on iOS: History, New chat, Settings. */
-@Composable
-private fun BottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
-    NavigationBar {
-        listOf(Tab.HISTORY to Icons.Outlined.History, Tab.CHAT to Icons.Outlined.Edit, Tab.SETTINGS to Icons.Outlined.Settings).forEach { (tab, icon) ->
-            NavigationBarItem(selected = selected == tab, onClick = { onSelect(tab) }, icon = { Icon(icon, contentDescription = tab.name.lowercase()) })
-        }
+    // A temporary chat is always dark, so it's obvious at a glance you're off the record.
+    val systemDark = isSystemInDarkTheme()
+    val dark = (tab == Tab.CHAT && state.isTemporary) || when (state.appearance) {
+        Appearance.SYSTEM -> systemDark
+        Appearance.LIGHT -> false
+        Appearance.DARK -> true
     }
-}
+    androidx.compose.runtime.SideEffect { onDarkChange(dark) }
 
-@Composable
-private fun ChatScreen(state: UiState, vm: ChatViewModel) {
-    val list = rememberLazyListState()
-    val count = state.chat.messages.size + if (state.streaming != null) 1 else 0
-    LaunchedEffect(count, state.streaming?.length) { if (count > 0) list.animateScrollToItem(count - 1) }
-
-    Column(Modifier.fillMaxSize().imePadding()) {
-        TextButton(onClick = vm::toggleTemporary, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-            Text(if (state.chat.isTemporary) "Temporary chat" else "Loocal")
-        }
-        if (!state.modelReady) {
-            Text("Download the model in Settings to start.", Modifier.padding(16.dp).align(Alignment.CenterHorizontally), style = MaterialTheme.typography.bodyMedium)
-        }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(state.chat.messages, key = { it.id }) { message ->
-                val isLatestReply = message.role == Role.ASSISTANT && message.id == state.chat.messages.last().id
-                Bubble(message, onEdit = { vm.edit(message) }, onRegenerate = if (isLatestReply) vm::regenerate else null)
-            }
-            state.streaming?.let { text -> item { Bubble(Message(role = Role.ASSISTANT, text = text.ifEmpty { "…" }), null, null) } }
-        }
-        Composer(state, vm)
+    fun go(destination: Tab) { tab = destination }
+    fun choose(destination: Tab) {
+        // The middle destination starts a fresh chat when you're already looking at one.
+        if (destination == Tab.CHAT && tab == Tab.CHAT && state.chat.messages.isNotEmpty()) vm.newChat() else go(destination)
     }
-}
+    BackHandler(tab != Tab.CHAT && settingsPage == SettingsPage.HOME) { go(Tab.CHAT) }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-private fun Bubble(message: Message, onEdit: (() -> Unit)?, onRegenerate: (() -> Unit)?) {
-    val clipboard = LocalClipboardManager.current
-    var menu by remember { mutableStateOf(false) }
-    val isUser = message.role == Role.USER
-    Box(Modifier.fillMaxWidth(), contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart) {
-        Box(
-            Modifier
-                .widthIn(max = 320.dp)
-                .background(if (isUser) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface, RoundedCornerShape(18.dp))
-                .combinedClickable(onClick = {}, onLongClick = { menu = true })
-                .padding(12.dp),
-        ) {
-            Text(message.text)
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("Copy") }, onClick = { clipboard.setText(AnnotatedString(message.text)); menu = false })
-                if (isUser && onEdit != null) DropdownMenuItem(text = { Text("Edit") }, onClick = { onEdit(); menu = false })
-                if (onRegenerate != null) DropdownMenuItem(text = { Text("Regenerate") }, onClick = { onRegenerate(); menu = false })
-            }
-        }
-    }
-}
-
-@Composable
-private fun Composer(state: UiState, vm: ChatViewModel) {
-    var personaMenu by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.Bottom) {
-        OutlinedTextField(
-            value = state.draft,
-            onValueChange = vm::setDraft,
-            modifier = Modifier.weight(1f),
-            placeholder = { Text(state.persona?.let { "Ask ${it.name}" } ?: "Ask anything") },
-            maxLines = 6,
-        )
-        Spacer(Modifier.width(8.dp))
-        Box {
-            if (state.isBusy) {
-                IconButton(onClick = vm::stop) { Icon(Icons.Outlined.StopCircle, "Stop") }
-            } else {
-                // Tap sends; the persona menu opens from the adjacent button (Android stand-in for the iOS hold gesture).
-                Row {
-                    if (state.personas.isNotEmpty()) IconButton(onClick = { personaMenu = true }) { Icon(Icons.Outlined.Face, "Persona") }
-                    IconButton(onClick = vm::send, enabled = state.canSend) { Icon(Icons.Outlined.ArrowUpward, "Send") }
+    val shift = with(LocalDensity.current) { 28.dp.roundToPx() }
+    LoocalTheme(dark) {
+        val keyboard = WindowInsets.isImeVisible
+        Box(Modifier.fillMaxSize().background(ink.paper)) {
+            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding()) {
+                AnimatedContent(
+                    tab, label = "page", modifier = Modifier.weight(1f).fillMaxWidth(),
+                    // Pages drift in from the side of the tab you tapped.
+                    transitionSpec = {
+                        val forward = targetState.ordinal >= initialState.ordinal
+                        val spring = spring<androidx.compose.ui.unit.IntOffset>(dampingRatio = 0.88f, stiffness = 300f)
+                        (slideInHorizontally(spring) { if (forward) shift else -shift } + fadeIn(tween(300))) togetherWith
+                            (slideOutHorizontally(spring) { if (forward) -shift else shift } + fadeOut(tween(200)))
+                    },
+                ) { current ->
+                    when (current) {
+                        Tab.HISTORY -> HistoryScreen(state, open = { vm.open(it); go(Tab.CHAT) }, delete = vm::delete, togglePin = vm::togglePin)
+                        Tab.CHAT -> ChatScreen(state, vm, openPersonas = { addingPersona = true; go(Tab.SETTINGS) })
+                        Tab.SETTINGS -> SettingsScreen(state, vm, settingsPage, { settingsPage = it }, addingPersona) { addingPersona = false }
+                    }
+                }
+                AnimatedVisibility(
+                    !keyboard,
+                    enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    // Sits low, like Soma: tucked toward the gesture bar.
+                    Box(Modifier.fillMaxWidth().background(ink.paper).padding(top = 6.dp).offset(y = 4.dp), contentAlignment = Alignment.Center) {
+                        DestinationBar(tab, ::choose)
+                    }
                 }
             }
-            DropdownMenu(expanded = personaMenu, onDismissRequest = { personaMenu = false }) {
-                DropdownMenuItem(text = { Text("No persona") }, onClick = { vm.choosePersona(null); personaMenu = false })
-                state.personas.forEach { p -> DropdownMenuItem(text = { Text(p.name) }, onClick = { vm.choosePersona(p.id); personaMenu = false }) }
-            }
+            Box(Modifier.align(Alignment.TopCenter)) { Toast(state.error, vm::dismissError) }
         }
-    }
-}
-
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
-@Composable
-private fun HistoryScreen(chats: List<Chat>, onOpen: (Chat) -> Unit, onDelete: (Chat) -> Unit) {
-    if (chats.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No chats yet") }
-        return
-    }
-    LazyColumn(Modifier.fillMaxSize()) {
-        items(chats, key = { it.id }) { chat ->
-            var menu by remember { mutableStateOf(false) }
-            Box {
-                ListItem(headlineContent = { Text(chat.title, maxLines = 1) }, modifier = Modifier.combinedClickable(onClick = { onOpen(chat) }, onLongClick = { menu = true }))
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Delete") }, onClick = { onDelete(chat); menu = false })
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SettingsScreen(state: UiState, vm: ChatViewModel) {
-    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Model", style = MaterialTheme.typography.titleMedium)
-        when {
-            state.modelReady -> Text("Downloaded")
-            state.downloadProgress != null -> LinearProgressIndicator(progress = { state.downloadProgress }, modifier = Modifier.fillMaxWidth())
-            else -> Button(onClick = vm::downloadModel) { Text("Download model") }
-        }
-        HorizontalDivider()
-        PersonaEditor(state.personas, vm::savePersonas)
-    }
-}
-
-@Composable
-private fun PersonaEditor(personas: List<Persona>, onSave: (List<Persona>) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var prompt by remember { mutableStateOf("") }
-    Text("Personas", style = MaterialTheme.typography.titleMedium)
-    personas.forEach { p ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(p.name, Modifier.weight(1f))
-            IconButton(onClick = { onSave(personas - p) }) { Icon(Icons.Outlined.Delete, "Delete ${p.name}") }
-        }
-    }
-    if (personas.size < Persona.LIMIT) {
-        OutlinedTextField(name, { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(prompt, { prompt = it }, label = { Text("System prompt") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
-        Button(enabled = name.isNotBlank() && prompt.isNotBlank(), onClick = {
-            onSave(personas + Persona(name = name.trim(), icon = Persona.ICONS[personas.size % Persona.ICONS.size], prompt = prompt.trim()))
-            name = ""; prompt = ""
-        }) { Text("Add persona") }
     }
 }
