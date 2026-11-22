@@ -33,6 +33,8 @@ import app.loocal.ui.theme.Appearance
 import app.loocal.tools.ActionRunner
 import app.loocal.tools.Connector
 import app.loocal.tools.ConnectorHub
+import app.loocal.domain.Island
+import app.loocal.domain.IslandText
 import app.loocal.tools.SourceIntent
 import app.loocal.tools.McpClient
 import app.loocal.tools.McpServer
@@ -73,6 +75,10 @@ data class UiState(
     val personas: List<Persona> = emptyList(),
     val personaId: String? = null,
     val draft: String = "",
+    /** Islands placed in the draft (their markers are in [draft]). */
+    val draftIslands: List<Island> = emptyList(),
+    /** An island waiting to be put at the prompt's cursor; the field takes it and clears it. */
+    val islandToInsert: Island? = null,
     /** Id of the reply being written, while generating. */
     val generatingId: String? = null,
     /** Text written so far for [generatingId]. */
@@ -127,7 +133,7 @@ data class UiState(
 
 class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val store = ChatStore(app.filesDir.resolve("archive"))
-    private val photos = PhotoStore(app.filesDir)
+    private val photos = PhotoStore(app.filesDir).also { IslandArt.photos = app.filesDir }
     private val prefs = app.getSharedPreferences("loocal", Context.MODE_PRIVATE)
     private val downloader = ModelDownloader(app.filesDir.resolve("models"))
     private val json = Json { ignoreUnknownKeys = true }
@@ -210,7 +216,35 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** A temporary chat is discarded when you leave it, photos included. */
     private fun leaveTemporary() { if (_state.value.chat.isTemporary) photos.clearTemporary() }
 
-    fun setDraft(text: String) = _state.update { it.copy(draft = text) }
+    /**
+     * The field's text, islands as markers. An attachment whose island was deleted from the text
+     * goes with it.
+     */
+    fun setDraft(text: String) {
+        val s = _state.value
+        val gone = s.draftIslands.filter { !text.contains(it.marker) }
+        if (gone.any { it.kind == Island.Kind.PHOTO }) s.photo?.let { photos.delete(listOf(it.name)) }
+        val goneFiles = gone.filter { it.kind == Island.Kind.FILE }.map { it.ref }.toSet()
+        _state.update {
+            it.copy(
+                draft = text, draftIslands = it.draftIslands - gone.toSet(),
+                photo = if (gone.any { g -> g.kind == Island.Kind.PHOTO }) null else it.photo,
+                files = it.files.filterNot { f -> f.name in goneFiles },
+            )
+        }
+    }
+
+    /** Puts an island at the prompt's cursor (the field does the placing). */
+    fun placeIsland(island: Island) = _state.update { it.copy(draftIslands = it.draftIslands + island, islandToInsert = island) }
+
+    fun islandPlaced() = _state.update { it.copy(islandToInsert = null) }
+
+    private fun removeIsland(match: (Island) -> Boolean) = _state.update { s ->
+        val gone = s.draftIslands.filter(match)
+        var text = s.draft
+        gone.forEach { text = text.replace(" " + it.marker, "").replace(it.marker, "") }
+        s.copy(draft = text, draftIslands = s.draftIslands - gone.toSet())
+    }
     fun dismissError() = _state.update { it.copy(error = null, notice = null) }
     fun showError(message: String) = _state.update { it.copy(error = message) }
 
@@ -310,7 +344,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             runCatching { withContext(Dispatchers.IO) { photos.import(app.contentResolver, uri, _state.value.isTemporary) } }
                 .onSuccess { stored ->
                     _state.value.photo?.let { photos.delete(listOf(it.name)) }
+                    removeIsland { it.kind == Island.Kind.PHOTO }
                     _state.update { it.copy(photo = PendingPhoto(stored.name, stored.modelWidth, stored.modelHeight)) }
+                    placeIsland(Island.photo(stored.name))
                 }
                 .onFailure { e -> _state.update { it.copy(error = "The photo couldn’t be imported: ${e.message}") } }
             _state.update { it.copy(preparingPhoto = false) }
@@ -320,19 +356,34 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun discardPhoto() {
         _state.value.photo?.let { photos.delete(listOf(it.name)) }
         _state.update { it.copy(photo = null) }
+        removeIsland { it.kind == Island.Kind.PHOTO }
     }
 
     fun attachFiles(uris: List<Uri>) {
         viewModelScope.launch {
             for (uri in uris) {
                 withContext(Dispatchers.IO) { FileReader.read(app, uri) }
-                    .onSuccess { file -> _state.update { it.copy(files = it.files + file) } }
+                    .onSuccess { file -> _state.update { it.copy(files = it.files + file) }; placeIsland(Island.file(file.name)) }
                     .onFailure { e -> _state.update { it.copy(error = e.message) } }
             }
         }
     }
 
-    fun removeFile(name: String) = _state.update { s -> s.copy(files = s.files.filterNot { it.name == name }) }
+    fun removeFile(name: String) {
+        _state.update { s -> s.copy(files = s.files.filterNot { it.name == name }) }
+        removeIsland { it.kind == Island.Kind.FILE && it.ref == name }
+    }
+
+    /**
+     * A connector picked in the tray goes into the prompt as an island, for this message only
+     * (picking it again takes it out). Connectors switched on in Settings stay on for every message.
+     */
+    fun toggleConnectorIsland(id: String) {
+        val s = _state.value
+        if (s.draftIslands.any { it.kind == Island.Kind.CONNECTOR && it.ref == id }) { removeIsland { it.kind == Island.Kind.CONNECTOR && it.ref == id }; return }
+        val name = s.connectors.firstOrNull { it.id == id }?.name ?: return
+        placeIsland(Island.connector(id, name))
+    }
 
     // MARK: Connectors, MCP and memory
 
@@ -459,6 +510,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val s = _state.value
         if (!s.canSend) return
         val prompt = s.draft.trim()
+        val islands = IslandText.present(prompt, s.draftIslands)
         if (PromptBuilder.isPromptTooLong(prompt)) {
             _state.update { it.copy(error = "Shorten your prompt to 6,000 characters or fewer for the phone context.") }
             return
@@ -466,11 +518,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val fallback = if (s.files.isEmpty()) "Describe this image." else "Summarize the attached file."
         val context = if (s.files.isEmpty()) null else s.files.joinToString("\n\n") { "Attached file “${it.name}”:\n${it.text}" }
         val message = Message(
-            role = Role.USER, text = prompt.ifEmpty { fallback },
+            // Only islands, no words: the attachment's usual question follows them.
+            role = Role.USER, text = if (IslandText.stripped(prompt).isEmpty() && (s.photo != null || s.files.isNotEmpty())) (if (prompt.isEmpty()) fallback else "$prompt $fallback") else prompt,
+            islands = islands,
             imageName = s.photo?.name, imageWidth = s.photo?.width ?: 0, imageHeight = s.photo?.height ?: 0,
             files = s.files.map { it.name }, context = context,
         )
-        _state.update { it.copy(draft = "", photo = null, files = emptyList(), chat = it.chat.appending(message)) }
+        _state.update { it.copy(draft = "", draftIslands = emptyList(), photo = null, files = emptyList(), chat = it.chat.appending(message)) }
         reply()
     }
 
@@ -491,7 +545,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         if (s.isBusy) return
         val index = s.chat.messages.indexOfFirst { it.id == message.id }
         if (index >= 0) photos.delete(s.chat.messages.drop(index).mapNotNull { it.imageName })
-        _state.update { it.copy(chat = it.chat.rewoundTo(message.id), draft = message.text, performance = "") }
+        _state.update { it.copy(chat = it.chat.rewoundTo(message.id), draft = message.text, draftIslands = message.islands.filter { i -> i.kind == Island.Kind.CONNECTOR }, performance = "") }
         persist()
     }
 
@@ -508,9 +562,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             var started = 0L
             try {
                 val s = _state.value
-                val question = s.chat.messages.lastOrNull { it.role == Role.USER }?.text.orEmpty()
+                val asking = s.chat.messages.lastOrNull { it.role == Role.USER }
+                // Tools look at the words; islands in the prompt switch their connectors on for this message.
+                val question = IslandText.stripped(asking?.text.orEmpty())
+                val placed = asking?.islands.orEmpty().filter { it.kind == Island.Kind.CONNECTOR }.map { it.ref }.toSet()
                 // Asking for a search in so many words turns it on for this reply.
-                val switchedOn = if (WebSearch.explicitlyAsked(question)) s.activeConnectors + Connector.WEB.id else s.activeConnectors
+                val switchedOn = (if (WebSearch.explicitlyAsked(question)) s.activeConnectors + Connector.WEB.id else s.activeConnectors) + placed
                 val definitions = toolDefinitions(switchedOn)
                 var system = prompts.systemPrompt(s.persona)
                 // "Check my calendar" reads the calendar even when it isn't switched on; a source that

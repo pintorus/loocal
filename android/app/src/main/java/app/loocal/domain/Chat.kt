@@ -23,10 +23,16 @@ data class Message(
     val context: String? = null,
     /** Steps a reply took before answering: sources read, tools run, actions done. */
     val tools: List<app.loocal.tools.ToolUse> = emptyList(),
+    /** Tools, connectors and attachments placed in the prompt as islands (markers in [text]). */
+    val islands: List<Island> = emptyList(),
 ) {
-    /** What the model reads for this message: attached file text, then the message. */
-    val modelText get() = context?.let { it + "\n\n" + text } ?: text
+    /** The prompt as a person reads it (titles, copy, edit, History). */
+    val readable get() = IslandText.titled(text, islands)
+
+    /** What the model reads for this message: attached file text, then the message, islands by name. */
+    val modelText get() = IslandText.spoken(text, islands).let { spoken -> context?.let { it + "\n\n" + spoken } ?: spoken }
 }
+
 
 /** A saved conversation. A temporary chat is never written to the archive. */
 @Serializable
@@ -40,7 +46,7 @@ data class Chat(
 ) {
     /** History title: the first prompt, shortened. */
     val title: String
-        get() = messages.firstOrNull { it.role == Role.USER }?.text?.lineSequence()?.first()?.take(60) ?: "New chat"
+        get() = messages.firstOrNull { it.role == Role.USER }?.readable?.lineSequence()?.first()?.take(60) ?: "New chat"
 
     /** A chat takes its date from its first message (typed, spoken, or continued from an errand), not from when it was opened. */
     fun appending(message: Message) = copy(messages = messages + message, updatedAt = message.createdAt, createdAt = if (messages.isEmpty()) message.createdAt else createdAt)

@@ -69,6 +69,9 @@ fun geist(size: Int, weight: FontWeight = FontWeight.Normal, color: Color = Colo
     TextStyle(fontFamily = Geist, fontSize = size.sp, fontWeight = weight, color = color, lineHeight = lineHeight)
 
 /** `.serif(size, italic)` from iOS, with its -0.4 tracking for titles. */
+fun geist(size: Float, weight: FontWeight = FontWeight.Normal, color: Color = Color.Unspecified) =
+    TextStyle(fontFamily = Geist, fontSize = size.sp, fontWeight = weight, color = color)
+
 fun serif(size: Int, italic: Boolean = false, color: Color = Color.Unspecified) =
     TextStyle(fontFamily = InstrumentSerif, fontSize = size.sp, fontStyle = if (italic) FontStyle.Italic else FontStyle.Normal, color = color, letterSpacing = (-0.4).sp)
 

@@ -159,7 +159,7 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
                 ToolAction.Kind.REMINDER -> if (android.os.Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
                 else -> {}
             }
-            if (Places.detect(text) != null) add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (Places.detect(text) != null || state.draftIslands.any { it.ref == Connector.MAPS.id && text.contains(it.marker) }) add(Manifest.permission.ACCESS_COARSE_LOCATION)
             // "What have I got tomorrow": ask for the calendar now, or the model is told it can't read it.
             if (app.loocal.tools.Connector.CALENDAR.id in app.loocal.tools.SourceIntent.wanted(text)) add(Manifest.permission.READ_CALENDAR)
         }
@@ -174,9 +174,10 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
             "connectors" -> { trayPage = "connectors"; return }
             "back" -> { trayPage = "main"; return }
             "server" -> { attachOpen = false; trayPage = "main"; serverPrompt = true; return }
-            Connector.CALENDAR.id -> { withPermissions(if (item.on) emptyList() else listOf(Manifest.permission.READ_CALENDAR)) { vm.toggleConnector(item.id) }; return } // toggles keep the tray open
+            Connector.CALENDAR.id -> { attachOpen = false; trayPage = "main"; withPermissions(if (item.on) emptyList() else listOf(Manifest.permission.READ_CALENDAR)) { vm.toggleConnectorIsland(item.id) }; return }
         }
-        if (state.connectors.any { it.id == item.id }) { vm.toggleConnector(item.id); return }
+        // A connector goes into the prompt as an island, for this message.
+        if (state.connectors.any { it.id == item.id }) { attachOpen = false; trayPage = "main"; vm.toggleConnectorIsland(item.id); return }
         attachOpen = false
         trayPage = "main"
         when (item.id) {
@@ -418,7 +419,7 @@ private fun MessageRow(
                     )
                 },
         ) {
-            if (isUser) UserMessage(message, vm::photoFile) else AssistantMessage(message, generating = false, interrupted = message.id in state.interrupted, undo = vm::undoAction)
+            if (isUser) UserMessage(message, vm::photoFile) else AssistantMessage(message, generating = false, interrupted = message.id in state.interrupted, undo = vm::undoAction, speak = vm::readAloud)
         }
         AnimatedVisibility(
             isHeld,
@@ -434,7 +435,7 @@ private fun MessageRow(
 @Composable
 private fun UserMessage(message: Message, photoFile: (String) -> File) {
     Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(start = 48.dp)) {
-        if (message.files.isNotEmpty()) {
+        if (message.files.isNotEmpty() && message.islands.none { it.kind == app.loocal.domain.Island.Kind.FILE }) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 message.files.forEach { name ->
                     Row(
@@ -448,8 +449,8 @@ private fun UserMessage(message: Message, photoFile: (String) -> File) {
             }
         }
         message.imageName?.let { AttachedPhoto(photoFile(it)) }
-        Text(
-            message.text,
+        IslandText(
+            message.text, message.islands,
             style = geist(16, color = ink.primary, lineHeight = 22.sp),
             modifier = Modifier.background(ink.fill, RoundedCornerShape(22.dp)).padding(horizontal = 16.dp, vertical = 11.dp),
         )
@@ -469,12 +470,13 @@ private fun AttachedPhoto(file: File) {
 }
 
 @Composable
-private fun AssistantMessage(message: Message, generating: Boolean, interrupted: Boolean, phase: String = "", undo: (String) -> Unit = {}) {
+private fun AssistantMessage(message: Message, generating: Boolean, interrupted: Boolean, phase: String = "", undo: (String) -> Unit = {}, speak: (String) -> Unit = {}) {
     val shown = StreamingText.stable(message.text, live = generating)
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().animateContentSize()) {
         if (message.tools.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { message.tools.forEach { ToolBox(it, undo) } }
+            ToolTrail(message.tools, undo)
         }
+        message.tools.mapNotNull { it.widget }.forEach { ToolWidgetView(it, speak) }
         // "Thinking" stays until the first whole word is ready, so the row never hops.
         if (shown.isEmpty() && generating && message.tools.none { it.status == ToolUse.Status.RUNNING }) {
             // "Thinking" stays until the first whole word is ready, so the row never hops.
@@ -562,8 +564,8 @@ private fun Composer(
                         ) { Icon(androidx.compose.material.icons.Icons.Filled.Close, null, tint = ink.paper, modifier = Modifier.size(11.dp)) }
                     }
                 }
-                val chips = state.files.map { Chip("file:" + it.name, Icons.Outlined.Description, it.name) } +
-                    state.connectors.filter { it.id in state.activeConnectors }.map { Chip(it.id, symbolIcon(it.icon), it.name) }
+                // Files, photos and tray connectors sit in the text as islands; connectors switched on for every message show here.
+                val chips = state.connectors.filter { it.id in state.activeConnectors }.map { Chip(it.id, symbolIcon(it.icon), it.name) }
                 if (chips.isNotEmpty()) {
                     ChipRow(chips) { chip -> if (chip.id.startsWith("file:")) vm.removeFile(chip.id.removePrefix("file:")) else vm.toggleConnector(chip.id) }
                 }
@@ -579,7 +581,7 @@ private fun Composer(
                             open = attachOpen, setOpen = setAttachOpen,
                             items = if (trayPage == "connectors") {
                                 listOf(TrayItem("back", Icons.AutoMirrored.Outlined.ArrowBack, "Back")) +
-                                    state.connectors.map { TrayItem(it.id, symbolIcon(it.icon), it.name, on = it.id in state.activeConnectors) } +
+                                    state.connectors.map { c -> TrayItem(c.id, symbolIcon(c.icon), c.name, on = c.id in state.activeConnectors || state.draftIslands.any { it.ref == c.id }) } +
                                     TrayItem("server", Icons.Outlined.Dns, "Add MCP server")
                             } else listOf(
                                 TrayItem("photos", Icons.Outlined.PhotoLibrary, "Photos", enabled = state.model.vision),
@@ -591,18 +593,12 @@ private fun Composer(
                         )
                     }
                     Box(Modifier.weight(1f).alpha(if (personaOpen || attachOpen) 0f else 1f)) {
-                        BasicTextField(
-                            value = state.draft,
-                            onValueChange = vm::setDraft,
+                        IslandField(
+                            text = state.draft, islands = state.draftIslands,
+                            placeholder = state.persona?.let { "Ask ${it.name}" } ?: "Ask anything",
                             enabled = !state.isBusy && !personaOpen && !attachOpen,
-                            textStyle = geist(16, color = ink.primary, lineHeight = 22.sp),
-                            cursorBrush = SolidColor(ink.primary),
-                            maxLines = 6,
+                            toInsert = state.islandToInsert, inserted = vm::islandPlaced, onChange = vm::setDraft,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp).focusRequester(focusRequester),
-                            decorationBox = { inner ->
-                                if (state.draft.isEmpty()) Text(state.persona?.let { "Ask ${it.name}" } ?: "Ask anything", style = geist(16, color = ink.tertiary, lineHeight = 22.sp))
-                                inner()
-                            },
                         )
                     }
                     Box(

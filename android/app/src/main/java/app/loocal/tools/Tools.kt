@@ -41,7 +41,9 @@ object ToolBelt {
     suspend fun run(context: Context, message: String, force: Set<String>, show: (ToolUse) -> Unit): String {
         val notes = mutableListOf<String>()
         Calculator.answer(message)?.let { calc ->
-            show(ToolUse(kind = "calc", icon = "function", running = "Calculating", done = "Calculated", detail = calc.shown, status = ToolUse.Status.DONE))
+            val sides = calc.shown.split(" = ")
+            val widget = if (sides.size == 2) ToolWidget.Calculation(sides[0], sides[1]) else ToolWidget.Calculation("", calc.shown)
+            show(ToolUse(kind = "calc", icon = "function", running = "Calculating", done = "Calculated", detail = calc.shown, status = ToolUse.Status.DONE, widget = widget))
             notes.add("Exact result from the calculator (use it as is, don't redo the maths): ${calc.fact}")
         }
         Translator.detect(message)?.let { request ->
@@ -49,7 +51,7 @@ object ToolBelt {
             show(box)
             Translator.translate(request).fold(
                 { text ->
-                    box = box.copy(status = ToolUse.Status.DONE, detail = "${request.targetName} · $text")
+                    box = box.copy(status = ToolUse.Status.DONE, detail = "${request.targetName} · $text", widget = ToolWidget.Translation(request.targetName, text))
                     notes.add("On-device translation into ${request.targetName}: “$text”. Give exactly this translation as the answer, then nothing else unless useful.")
                 },
                 { e ->
@@ -64,7 +66,8 @@ object ToolBelt {
             show(box)
             Places.run(context, place).fold(
                 { found ->
-                    box = box.copy(status = ToolUse.Status.DONE, links = found.links, detail = found.summary.ifEmpty { box.detail })
+                    box = box.copy(status = ToolUse.Status.DONE, links = found.links, detail = found.summary.ifEmpty { box.detail },
+                        widget = if (found.pins.isNotEmpty()) ToolWidget.Map(place.query, found.pins, found.here) else null)
                     notes.add(found.fact)
                 },
                 { e ->
@@ -246,7 +249,7 @@ object Calculator {
  */
 object Places {
     data class Request(val query: String, val isRoute: Boolean)
-    data class Found(val summary: String, val fact: String, val links: List<ToolUse.Link>)
+    data class Found(val summary: String, val fact: String, val links: List<ToolUse.Link>, val pins: List<ToolWidget.Pin> = emptyList(), val here: ToolWidget.Pin? = null)
 
     private val nearby = listOf("near me", "nearby", "near here", "around me", "around here", "close by", "closest", "nearest", "near", "around", "local", "à proximité", "près de moi", "près d'ici", "autour de moi", "à côté", "le plus proche", "la plus proche", "les plus proches", "dans le coin", "dans le quartier", "proche", "près")
     private val kinds = listOf("restaurant", "café", "cafe", "coffee", "bar", "pub", "pharmacy", "chemist", "drugstore", "supermarket", "grocery", "bakery", "hotel", "gym", "park", "atm", "bank", "gas station", "petrol", "parking", "hospital", "doctor", "dentist", "museum", "cinema", "movie theater", "shop", "store", "mall", "sushi", "pizza", "burger", "brunch", "breakfast", "lunch", "dinner", "food", "ramen", "tacos", "vegan", "vegetarian", "library", "post office", "laundry", "laundromat", "metro", "subway", "train station", "bus stop", "hairdresser", "barber", "florist", "vet", "boulangerie", "pharmacie", "supermarché", "épicerie", "hôtel", "salle de sport", "parc", "banque", "distributeur", "station-service", "hôpital", "médecin", "dentiste", "musée", "cinéma", "magasin", "boutique", "bibliothèque", "poste", "laverie", "gare", "coiffeur", "fleuriste", "vétérinaire", "brasserie", "bistrot", "crêperie", "glacier", "librairie")
@@ -300,7 +303,8 @@ object Places {
             "$name, ${meters(meters)} away${if (address.isEmpty()) "" else ", $address"}" to ToolUse.Link("$name · ${meters(meters)}", mapLink(name, o.getString("lat"), o.getString("lon")))
         }
         val fact = "Places matching “${request.query}” near the user, nearest first (from OpenStreetMap):\n" + rows.withIndex().joinToString("\n") { "${it.index + 1}. ${it.value.first}" } + "\nAnswer from these; don't invent others."
-        Found("${items.size} places · nearest ${meters(items[0].second)}", fact, rows.map { it.second })
+        val pins = items.map { (name, meters, o) -> ToolWidget.Pin(name, meters(meters), o.getString("lat").toDouble(), o.getString("lon").toDouble(), mapLink(name, o.getString("lat"), o.getString("lon"))) }
+        Found("${items.size} places · nearest ${meters(items[0].second)}", fact, rows.map { it.second }, pins, ToolWidget.Pin("You", "", here.latitude, here.longitude))
     }
 
     private suspend fun trip(destination: String, here: Location): Found = withContext(Dispatchers.IO) {
@@ -320,7 +324,8 @@ object Places {
         }
         val straight = meters(distance(here, lat, lon))
         val fact = "Trip from the user's location to $name (OpenStreetMap): " + (if (lines.isEmpty()) "about $straight as the crow flies; no route times available." else lines.joinToString("; ") + ".")
-        Found(lines.firstOrNull()?.let { "$name · $it" } ?: "$name · $straight", fact, listOf(ToolUse.Link("$name on the map", mapLink(name, place.getString("lat"), place.getString("lon")))))
+        Found(lines.firstOrNull()?.let { "$name · $it" } ?: "$name · $straight", fact, listOf(ToolUse.Link("$name on the map", mapLink(name, place.getString("lat"), place.getString("lon")))),
+            listOf(ToolWidget.Pin(name, lines.firstOrNull() ?: straight, lat, lon, mapLink(name, place.getString("lat"), place.getString("lon")))), ToolWidget.Pin("You", "", here.latitude, here.longitude))
     }
 
     private fun mapLink(name: String, lat: String, lon: String) = "geo:$lat,$lon?q=$lat,$lon(" + enc(name) + ")"

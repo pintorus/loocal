@@ -56,12 +56,31 @@ data class ToolUse(
     val status: Status = Status.RUNNING,
     val links: List<Link> = emptyList(),
     val action: ToolAction? = null,
+    /** What the tool found, drawn into the reply. */
+    val widget: ToolWidget? = null,
 ) {
     @Serializable enum class Status { RUNNING, DONE, FAILED, UNDONE }
     @Serializable data class Link(val title: String, val url: String) {
         val host get() = runCatching { URL(url).host.removePrefix("www.") }.getOrDefault(url)
     }
-    val title get() = when (status) { Status.RUNNING -> running; Status.UNDONE -> "Undone"; else -> done }
+    val title get() = when (status) {
+        Status.RUNNING -> running; Status.UNDONE -> "Undone"; Status.DONE -> done
+        Status.FAILED -> when {
+            action != null -> "Couldn’t do it"
+            done.startsWith("Searched ") -> "Couldn’t search " + done.removePrefix("Searched ")
+            else -> "Couldn’t reach " + done.lowercase()
+        }
+    }
+}
+
+/** A small piece of interface a tool puts into the reply text (iOS `ToolWidget`). */
+@Serializable
+sealed interface ToolWidget {
+    @Serializable data class Pin(val name: String, val detail: String, val latitude: Double, val longitude: Double, val url: String? = null)
+    /** Places found around you (or a trip's destination), and where you are. */
+    @Serializable @kotlinx.serialization.SerialName("map") data class Map(val title: String, val pins: List<Pin>, val here: Pin? = null) : ToolWidget
+    @Serializable @kotlinx.serialization.SerialName("calculation") data class Calculation(val expression: String, val result: String) : ToolWidget
+    @Serializable @kotlinx.serialization.SerialName("translation") data class Translation(val language: String, val text: String) : ToolWidget
 }
 
 /** Built-in context, read right before a reply. Each source's share of the prompt is capped. */
