@@ -31,3 +31,16 @@ class IslandsTest {
         assertEquals("Find a quiet café Maps that doesn’t clash with Calendar", chat.title)
     }
 }
+
+class IslandFieldTest {
+    @Test fun typedToolNamesAreFound() {
+        val found = app.loocal.ui.mentionRanges("Check maps and Calendar, not mapsy ⟦maps1234⟧", mapOf("maps" to "maps", "calendar" to "calendar"))
+        assertEquals(listOf(6..9 to "maps", 15..22 to "calendar"), found)
+    }
+
+    @Test fun carriedIslandsLandBetweenWords() {
+        assertEquals(5, app.loocal.ui.landing("find quiet cafe", 7))
+        assertEquals(10, app.loocal.ui.landing("find quiet cafe", 9))
+        assertEquals(0, app.loocal.ui.landing("find", 0))
+    }
+}

@@ -75,7 +75,7 @@ Goal: the Android app is a faithful clone of the iOS app — same features, same
 | --- | --- | --- | --- |
 | Chats dated by their first message | `2f0ece0` | `Chat.appending` | ✅ |
 | Sources read from plain words ("check my calendar", "next month") | `SourceIntent`, `ConnectorHub.resolve` | port; calendar window as on iOS; refusal note when not allowed; chat, voice, errands | ✅ |
-| Tool islands in the prompt | `Islands`, `IslandArt`, `IslandField` | `EditText` with capsule spans (same scenes drawn on `Canvas`); backspace takes a whole island; one message only | ✅ (dragging an island and tapping a typed tool name ➖ for now) |
+| Tool islands in the prompt | `Islands`, `IslandArt`, `IslandField` | `EditText` with capsule spans (same scenes drawn on `Canvas`); backspace takes a whole island; one message only | ✅ (tap a typed tool name to make it an island; long-press and drag to move one) |
 | Widgets in replies, tool calls folded into one line | `ToolTrail` | Compose port; the map is a still OpenStreetMap view with numbered places | ✅ |
 | Parallel replies, errands starting together | `0be52a9` | one job per chat, up to three; they take turns on one llama.cpp context; History shows chats being answered | ✅ (turns, not simultaneous sequences) |
 | Leaner memory | `12c801a` | 8-bit KV cache (flash attention), model refused when it can't fit; prompts already read in 512-token steps | ✅ (lazy vision tower ➖) |

@@ -248,6 +248,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun islandPlaced() = _state.update { it.copy(islandToInsert = null) }
 
+    /** A typed tool name was tapped: its island joins the draft (the field puts it in the word's place). */
+    fun adoptIsland(connectorId: String): Island? {
+        val name = _state.value.connectors.firstOrNull { it.id == connectorId }?.name ?: return null
+        return Island.connector(connectorId, name).also { island -> _state.update { it.copy(draftIslands = it.draftIslands + island) } }
+    }
+
     private fun removeIsland(match: (Island) -> Boolean) = _state.update { s ->
         val gone = s.draftIslands.filter(match)
         var text = s.draft

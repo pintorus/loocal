@@ -598,6 +598,12 @@ private fun Composer(
                             placeholder = state.persona?.let { "Ask ${it.name}" } ?: "Ask anything",
                             enabled = !state.isBusy && !personaOpen && !attachOpen,
                             toInsert = state.islandToInsert, inserted = vm::islandPlaced, onChange = vm::setDraft,
+                            mentions = remember(state.connectors, state.draftIslands) {
+                                state.connectors.filter { c -> state.draftIslands.none { it.ref == c.id } }
+                                    .flatMap { c -> listOf(c.name.lowercase() to c.id) + (if (c.id == Connector.WEB.id) listOf("web" to c.id) else emptyList()) }
+                                    .toMap()
+                            },
+                            adopt = vm::adoptIsland,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp).focusRequester(focusRequester),
                         )
                     }
