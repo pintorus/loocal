@@ -1,0 +1,11 @@
+{
+  "id": "qwen3-vl-8b",
+  "name": "Qwen3 VL 8B",
+  "detail": "Balanced · words and vision",
+  "repository": "noctrex/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF",
+  "revision": "97426eb428c5c67d117aaba47d924af9209ee824",
+  "files": [
+    { "path": "Huihui-Qwen3-VL-8B-Instruct-abliterated-IQ4_NL.gguf", "size": 4818790944, "sha256": "f6d29a9747ba54a18e2a4b28b4628e331956b30ccc6ec41c9ed00e43f839415e" },
+    { "path": "mmproj-F16.gguf", "size": 1159030272, "sha256": "88b7d61987b89b820e9acbe4cb75233d063e5847aaeddc87783fee1f1b6782ef" }
+  ]
+}

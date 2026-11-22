@@ -9,7 +9,7 @@ class PromptBuilderTest {
     private fun reply(t: String) = Message(role = Role.ASSISTANT, text = t)
 
     /** One token per character: easy to reason about in tests. */
-    private val byChars = PromptBuilder { system, messages -> system.length + messages.sumOf { it.text.length } }
+    private val byChars = PromptBuilder { system, messages, photo -> system.length + messages.sumOf { it.text.length } + (photo?.let { 256 } ?: 0) }
 
     @Test fun defaultPromptWhenNoPersonaOrBlank() {
         assertEquals(Limits.DEFAULT_SYSTEM_PROMPT, byChars.systemPrompt(null))
@@ -35,6 +35,15 @@ class PromptBuilderTest {
     @Test fun singleOverlongPromptIsRejected() {
         val result = byChars.prepare(listOf(user("x".repeat(3000))), null)
         assertEquals(PreparedPrompt.TooLong, result)
+    }
+
+    @Test fun keepsOnlyTheMostRecentPhotoAndOnlyForVisionModels() {
+        val old = Message(role = Role.USER, text = "a", imageName = "1.jpg", imageWidth = 512, imageHeight = 384)
+        val new = Message(role = Role.USER, text = "b", imageName = "2.jpg", imageWidth = 384, imageHeight = 512)
+        val history = listOf(old, reply("x"), new)
+        val ready = byChars.prepare(history, null, vision = true) as PreparedPrompt.Ready
+        assertEquals(PhotoSlot(2, 384, 512), ready.photo)
+        assertEquals(null, (byChars.prepare(history, null, vision = false) as PreparedPrompt.Ready).photo)
     }
 
     @Test fun editRewindsAndRegenerateDropsLatestReply() {

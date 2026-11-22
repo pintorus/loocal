@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The errand bot, ink on paper. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M25.80,61.40 C24.60,45.80 36.60,35.00 51.00,34.40 C66.60,33.80 82.20,39.80 82.20,52.40 C82.20,66.20 71.40,78.20 57.00,78.20 C41.40,78.20 27.00,75.20 25.80,61.40 Z" android:fillColor="#111111" />
+    <path android:pathData="M43.65,53.75 A2.55,2.55 0 0 1 48.75,53.75 L48.75,60.05 A2.55,2.55 0 0 1 43.65,60.05 Z M59.25,53.75 A2.55,2.55 0 0 1 64.35,53.75 L64.35,60.05 A2.55,2.55 0 0 1 59.25,60.05 Z" android:fillColor="#FFFFFF" />
+</vector>

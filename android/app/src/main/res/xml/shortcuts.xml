@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the app icon (the Android counterpart of the iOS Shortcuts / Siri entries). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="chat" android:enabled="true" android:icon="@drawable/ic_launcher_loop" android:shortcutShortLabel="@string/shortcut_chat">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.loocal" android:targetClass="app.loocal.MainActivity" android:data="loocal://chat" />
+    </shortcut>
+    <shortcut android:shortcutId="errand" android:enabled="true" android:icon="@drawable/ic_launcher_bot" android:shortcutShortLabel="@string/shortcut_errand">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.loocal" android:targetClass="app.loocal.MainActivity" android:data="loocal://errand" />
+    </shortcut>
+    <shortcut android:shortcutId="results" android:enabled="true" android:icon="@drawable/ic_launcher_bot" android:shortcutShortLabel="@string/shortcut_results">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="app.loocal" android:targetClass="app.loocal.MainActivity" android:data="loocal://results" />
+    </shortcut>
+</shortcuts>

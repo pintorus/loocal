@@ -2,6 +2,7 @@ package app.loocal.inference
 
 import app.loocal.domain.Limits
 import app.loocal.domain.Message
+import app.loocal.domain.PhotoSlot
 import app.loocal.domain.Role
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -10,10 +11,9 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 
 /**
- * llama.cpp engine through JNI (src/main/cpp/loocal_llama.cpp, llama.cpp pinned as a submodule).
+ * llama.cpp engine through JNI (src/main/cpp/loocal_llama.cpp, llama.cpp pinned as a submodule),
+ * with photos through libmtmd when the model has a vision projector.
  * Not thread-safe: one reply at a time, which the ViewModel guarantees.
- *
- * The chat template is applied natively (llama_chat_apply_template) so it matches the model's GGUF metadata.
  */
 class LlamaEngine(private val options: Options = Options()) : InferenceEngine {
     /**
@@ -33,31 +33,42 @@ class LlamaEngine(private val options: Options = Options()) : InferenceEngine {
     )
 
     private var handle = 0L
+    private var loadedPath: String? = null
     override val isLoaded get() = handle != 0L
+    override val hasVision get() = handle != 0L && nativeHasVision(handle)
 
-    override suspend fun load(modelPath: String) = withContext(Dispatchers.IO) {
-        if (isLoaded) return@withContext
-        check(nativeAvailable) { "The llama.cpp native library is not built into this APK yet." }
-        handle = nativeLoad(modelPath, Limits.MAX_INPUT_TOKENS + Limits.MAX_REPLY_TOKENS,
+    /** Loads [modelPath] (and its vision projector), replacing any other loaded model. */
+    override suspend fun load(modelPath: String, visionPath: String?) = withContext(Dispatchers.IO) {
+        if (isLoaded && loadedPath == modelPath) return@withContext
+        unload()
+        check(nativeAvailable) { "The llama.cpp native library is not built into this APK." }
+        handle = nativeLoad(modelPath, visionPath, Limits.MAX_INPUT_TOKENS + Limits.MAX_REPLY_TOKENS,
             options.threads, options.threadsBatch, options.loadMode, options.repack)
         check(handle != 0L) { "The model could not be loaded. It may not fit in memory on this phone." }
+        loadedPath = modelPath
     }
 
     override fun unload() {
         if (handle != 0L) nativeFree(handle)
         handle = 0L
+        loadedPath = null
     }
 
-    override fun countTokens(system: String, messages: List<Message>): Int =
-        nativeCountTokens(requireHandle(), roles(messages), texts(system, messages))
+    override fun countTokens(system: String, messages: List<Message>, photo: PhotoSlot?): Int =
+        nativeCountTokens(requireHandle(), roles(messages), texts(system, messages), photo?.let { it.index + 1 } ?: -1, photo?.width ?: 0, photo?.height ?: 0)
 
-    override fun generate(system: String, messages: List<Message>, maxTokens: Int): Flow<String> = flow {
+    override fun generate(system: String, messages: List<Message>, photo: PhotoInput?, maxTokens: Int): Flow<String> = flow {
         val h = requireHandle()
         try {
-            check(nativeStart(h, roles(messages), texts(system, messages), maxTokens)) { "The model could not read this prompt." }
+            val started = nativeStart(
+                h, roles(messages), texts(system, messages),
+                photo?.let { it.slot.index + 1 } ?: -1, photo?.slot?.width ?: 0, photo?.slot?.height ?: 0, photo?.rgb, maxTokens,
+            )
+            check(started) { "The model could not read this prompt." }
             while (true) {
                 val bytes = nativeNext(h) ?: break // null = end of sequence or max tokens
-                if (bytes.isNotEmpty()) emit(bytes.decodeToString()) // native side only returns complete UTF-8 characters
+                // One emission per token (empty while a character is incomplete), so callers can count tokens.
+                emit(bytes.decodeToString())
             }
         } finally {
             nativeReset(h) // fresh KV cache per reply, as on iOS
@@ -69,12 +80,13 @@ class LlamaEngine(private val options: Options = Options()) : InferenceEngine {
     // index 0 is the system prompt, then one entry per message
     private fun roles(messages: List<Message>) =
         arrayOf("system") + messages.map { if (it.role == Role.USER) "user" else "assistant" }
-    private fun texts(system: String, messages: List<Message>) = arrayOf(system) + messages.map { it.text }
+    private fun texts(system: String, messages: List<Message>) = arrayOf(system) + messages.map { it.modelText }
 
-    private external fun nativeLoad(path: String, contextTokens: Int, threads: Int, threadsBatch: Int, loadMode: Int, repack: Boolean): Long
+    private external fun nativeLoad(path: String, mmproj: String?, contextTokens: Int, threads: Int, threadsBatch: Int, loadMode: Int, repack: Boolean): Long
     private external fun nativeFree(handle: Long)
-    private external fun nativeCountTokens(handle: Long, roles: Array<String>, texts: Array<String>): Int
-    private external fun nativeStart(handle: Long, roles: Array<String>, texts: Array<String>, maxTokens: Int): Boolean
+    private external fun nativeHasVision(handle: Long): Boolean
+    private external fun nativeCountTokens(handle: Long, roles: Array<String>, texts: Array<String>, imageIndex: Int, width: Int, height: Int): Int
+    private external fun nativeStart(handle: Long, roles: Array<String>, texts: Array<String>, imageIndex: Int, width: Int, height: Int, rgb: ByteArray?, maxTokens: Int): Boolean
     private external fun nativeNext(handle: Long): ByteArray?
     private external fun nativeReset(handle: Long)
 

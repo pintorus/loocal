@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_chat">New chat</string>
+    <string name="shortcut_errand">New errand</string>
+    <string name="shortcut_results">Results</string>
+</resources>

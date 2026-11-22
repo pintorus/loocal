@@ -26,7 +26,11 @@ if(ANDROID_ABI STREQUAL "arm64-v8a")
     set(GGML_CPU_ARM_ARCH "${LOOCAL_ARM_ARCH}" CACHE STRING "" FORCE)
 endif()
 
+# Image understanding (Qwen3-VL) through libmtmd, built on its own without the rest of tools/.
+set(LLAMA_BUILD_MTMD ON CACHE BOOL "" FORCE)
+set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
+
 add_subdirectory(llama.cpp build-llama)
 
 add_library(loocal_llama SHARED loocal_llama.cpp)
-target_link_libraries(loocal_llama PRIVATE llama android log)
+target_link_libraries(loocal_llama PRIVATE llama mtmd android log)

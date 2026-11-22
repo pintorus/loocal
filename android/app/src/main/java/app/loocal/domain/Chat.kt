@@ -12,7 +12,21 @@ data class Message(
     val role: Role,
     val text: String,
     val createdAt: Long = System.currentTimeMillis(),
-)
+    /** Photo file name in the app's images folder, if one was sent with this prompt. */
+    val imageName: String? = null,
+    /** Size the photo is given to the model at (fits 512 x 512), for counting its tokens. */
+    val imageWidth: Int = 0,
+    val imageHeight: Int = 0,
+    /** Attached file names, shown as chips above the prompt. */
+    val files: List<String> = emptyList(),
+    /** Text of attached files, given to the model before the prompt (never shown). */
+    val context: String? = null,
+    /** Steps a reply took before answering: sources read, tools run, actions done. */
+    val tools: List<app.loocal.tools.ToolUse> = emptyList(),
+) {
+    /** What the model reads for this message: attached file text, then the message. */
+    val modelText get() = context?.let { it + "\n\n" + text } ?: text
+}
 
 /** A saved conversation. A temporary chat is never written to the archive. */
 @Serializable

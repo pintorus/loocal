@@ -47,12 +47,14 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Redo
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -68,6 +70,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -101,10 +104,34 @@ import app.loocal.ui.theme.geist
 import app.loocal.ui.theme.ink
 import app.loocal.ui.theme.serif
 import kotlinx.coroutines.launch
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.core.content.FileProvider
+import java.io.File
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.compose.material.icons.outlined.Hub
+import androidx.compose.material.icons.outlined.Dns
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material3.AlertDialog
+import app.loocal.tools.Connector
+import app.loocal.tools.Places
+import app.loocal.tools.ToolAction
+import app.loocal.tools.ToolUse
 
 /** Port of iOS `ChatView` (RootView.swift). */
 @Composable
-fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit) {
+fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, openConversation: () -> Unit = {}) {
     val focus = LocalFocusManager.current
     var personaOpen by remember { mutableStateOf(false) }
     var held by remember { mutableStateOf<String?>(null) }
@@ -112,6 +139,54 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit) {
     val composerFocus = remember { FocusRequester() }
     var composerHeight by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
+    val context = LocalContext.current
+    var attachOpen by remember { mutableStateOf(false) }
+    var trayPage by remember { mutableStateOf("main") }
+    var serverPrompt by remember { mutableStateOf(false) }
+    // Runs once the permissions it needs have been answered (granted or not: the action reports a refusal).
+    var afterPermission by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val askPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { afterPermission?.invoke(); afterPermission = null }
+    fun withPermissions(needed: List<String>, then: () -> Unit) {
+        val missing = needed.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) then() else { afterPermission = then; askPermissions.launch(missing.toTypedArray()) }
+    }
+    /** Asks for what the message will need (calendar, location, notifications), then sends. */
+    fun send() {
+        val text = state.draft
+        val needed = buildList {
+            when (ToolAction.detect(text)?.kind) {
+                ToolAction.Kind.EVENT -> { add(Manifest.permission.READ_CALENDAR); add(Manifest.permission.WRITE_CALENDAR) }
+                ToolAction.Kind.REMINDER -> if (android.os.Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                else -> {}
+            }
+            if (Places.detect(text) != null) add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        withPermissions(needed) { vm.send() }
+    }
+    var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> uri?.let(vm::attachPhoto) }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok -> if (ok) cameraUri?.let(vm::attachPhoto) }
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if (uris.isNotEmpty()) vm.attachFiles(uris) }
+    fun attach(item: TrayItem) {
+        when (item.id) {
+            "connectors" -> { trayPage = "connectors"; return }
+            "back" -> { trayPage = "main"; return }
+            "server" -> { attachOpen = false; trayPage = "main"; serverPrompt = true; return }
+            Connector.CALENDAR.id -> { withPermissions(if (item.on) emptyList() else listOf(Manifest.permission.READ_CALENDAR)) { vm.toggleConnector(item.id) }; return } // toggles keep the tray open
+        }
+        if (state.connectors.any { it.id == item.id }) { vm.toggleConnector(item.id); return }
+        attachOpen = false
+        trayPage = "main"
+        when (item.id) {
+            "photos" -> pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            "camera" -> {
+                val file = File(context.cacheDir, "camera").apply { mkdirs() }.let { File(it, "capture.jpg") }
+                cameraUri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+                runCatching { takePhoto.launch(cameraUri!!) }.onFailure { vm.showError("This device has no camera available.") }
+            }
+            "files" -> pickFiles.launch(arrayOf("text/*", "application/pdf", "application/json", "text/csv", "text/markdown", "application/xml", "text/html"))
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(ink.paper)) {
         // Model pill, with the temporary-chat note hanging under it.
@@ -120,7 +195,7 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit) {
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp)
                 .pointerInput(Unit) { detectTapGestures { focus.clearFocus() } },
         ) {
-            ModelPill(state.modelName, dimmed = !state.modelReady)
+            ModelSelector(state.models, state.modelId, vm::chooseModel, disabled = state.isBusy, dimmed = !state.modelReady)
             androidx.compose.animation.AnimatedVisibility(
                 state.isTemporary,
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
@@ -164,23 +239,49 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit) {
                     state.chat.messages.isEmpty() && state.modelReady && state.draft.isEmpty() && !state.isBusy,
                     enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it },
                 ) { Suggestions { vm.setDraft(it); composerFocus.requestFocus() } }
-                Composer(state, vm, personaOpen, { personaOpen = it }, composerFocus, openPersonas)
+                Composer(
+                    state, vm, personaOpen,
+                    // Only one tray at a time: opening + closes the persona capsule and vice versa.
+                    { personaOpen = it; if (it) attachOpen = false }, attachOpen,
+                    { attachOpen = it; if (it) { personaOpen = false; focus.clearFocus() } else trayPage = "main" },
+                    ::attach, composerFocus, openPersonas, trayPage, ::send,
+                    { withPermissions(listOf(Manifest.permission.RECORD_AUDIO)) { if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) openConversation() else vm.showError("Loocal needs the microphone for conversation mode. Allow it in Settings.") } },
+                )
             }
         }
     }
 
     selecting?.let { message -> SelectTextSheet(message.text) { selecting = null } }
+    if (serverPrompt) McpServerDialog(dismiss = { serverPrompt = false }) { address, token -> serverPrompt = false; vm.addMcpServer(address, token) }
 }
 
+/** Add an MCP server: its https address and an optional bearer token (kept encrypted on the phone). */
 @Composable
-private fun ModelPill(name: String, dimmed: Boolean) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier.height(38.dp).background(ink.fill, CircleShape).padding(horizontal = 17.dp)
-            .semantics { contentDescription = "Model $name" },
-    ) {
-        Text(name, style = geist(15, FontWeight.Medium, if (dimmed) ink.secondary else ink.primary), maxLines = 1)
-    }
+private fun McpServerDialog(dismiss: () -> Unit, connect: (String, String) -> Unit) {
+    var address by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = dismiss,
+        containerColor = ink.paper,
+        title = { Text("Add MCP server", style = geist(17, FontWeight.Medium, ink.primary)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Loocal connects over HTTPS and lets the model call this server’s tools. Its token stays encrypted on this phone.", style = geist(13, color = ink.secondary))
+                listOf(Triple(address, "https://server.example/mcp", { v: String -> address = v }), Triple(token, "Token (optional)", { v: String -> token = v })).forEachIndexed { i, (value, hint, set) ->
+                    Box(Modifier.fillMaxWidth().background(ink.fill, RoundedCornerShape(14.dp)).padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        if (value.isEmpty()) Text(hint, style = geist(15, color = ink.tertiary))
+                        BasicTextField(
+                            value, set, singleLine = true, textStyle = geist(15, color = ink.primary), cursorBrush = SolidColor(ink.primary),
+                            visualTransformation = if (i == 1) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { Text("Connect", style = geist(15, FontWeight.Medium, ink.primary), modifier = Modifier.padding(8.dp).pressable { connect(address, token) }) },
+        dismissButton = { Text("Cancel", style = geist(15, color = ink.secondary), modifier = Modifier.padding(8.dp).pressable(onClick = dismiss)) },
+    )
 }
 
 /** Empty chat: the logo is the switch (loop for a normal chat, ghost for temporary) and a serif title. */
@@ -284,7 +385,10 @@ private fun Transcript(
             ) {
                 messages.drop(split).forEach { MessageRow(it, state, vm, held, setHeld, edit, select) }
                 if (state.generatingId != null) {
-                    AssistantMessage(Message(id = state.generatingId, role = Role.ASSISTANT, text = state.streaming), generating = true, interrupted = false)
+                    AssistantMessage(Message(id = state.generatingId, role = Role.ASSISTANT, text = state.streaming, tools = state.streamingTools), generating = true, interrupted = false, phase = state.phase, undo = vm::undoAction)
+                }
+                if (!state.isBusy && state.performance.isNotEmpty()) {
+                    Text(state.performance, style = geist(11, color = ink.tertiary))
                 }
             }
         }
@@ -312,7 +416,7 @@ private fun MessageRow(
                     )
                 },
         ) {
-            if (isUser) UserMessage(message) else AssistantMessage(message, generating = false, interrupted = message.id in state.interrupted)
+            if (isUser) UserMessage(message, vm::photoFile) else AssistantMessage(message, generating = false, interrupted = message.id in state.interrupted, undo = vm::undoAction)
         }
         AnimatedVisibility(
             isHeld,
@@ -326,8 +430,22 @@ private fun MessageRow(
 }
 
 @Composable
-private fun UserMessage(message: Message) {
-    Box(Modifier.fillMaxWidth().padding(start = 48.dp), contentAlignment = Alignment.CenterEnd) {
+private fun UserMessage(message: Message, photoFile: (String) -> File) {
+    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().padding(start = 48.dp)) {
+        if (message.files.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                message.files.forEach { name ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.height(30.dp).border(1.dp, ink.hairline, CircleShape).padding(horizontal = 10.dp),
+                    ) {
+                        Icon(Icons.Outlined.Description, null, tint = ink.primary, modifier = Modifier.size(13.dp))
+                        Text(name, style = geist(13, FontWeight.Medium, ink.primary), maxLines = 1)
+                    }
+                }
+            }
+        }
+        message.imageName?.let { AttachedPhoto(photoFile(it)) }
         Text(
             message.text,
             style = geist(16, color = ink.primary, lineHeight = 22.sp),
@@ -336,15 +454,34 @@ private fun UserMessage(message: Message) {
     }
 }
 
+/** A photo sent with a message: sized to its own aspect (at most 230 x 280), rounded on the picture itself. */
 @Composable
-private fun AssistantMessage(message: Message, generating: Boolean, interrupted: Boolean) {
+private fun AttachedPhoto(file: File) {
+    val bitmap = remember(file.path) { android.graphics.BitmapFactory.decodeFile(file.path)?.asImageBitmap() } ?: return
+    val scale = minOf(230f / bitmap.width, 280f / bitmap.height)
+    Image(
+        bitmap, "Attached photo", contentScale = ContentScale.Crop,
+        modifier = Modifier.size((bitmap.width * scale).dp, (bitmap.height * scale).dp)
+            .clip(RoundedCornerShape(20.dp)).border(1.dp, ink.hairline, RoundedCornerShape(20.dp)),
+    )
+}
+
+@Composable
+private fun AssistantMessage(message: Message, generating: Boolean, interrupted: Boolean, phase: String = "", undo: (String) -> Unit = {}) {
     val shown = StreamingText.stable(message.text, live = generating)
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth().animateContentSize()) {
-        if (shown.isEmpty() && generating) {
+        if (message.tools.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { message.tools.forEach { ToolBox(it, undo) } }
+        }
+        // "Thinking" stays until the first whole word is ready, so the row never hops.
+        if (shown.isEmpty() && generating && message.tools.none { it.status == ToolUse.Status.RUNNING }) {
             // "Thinking" stays until the first whole word is ready, so the row never hops.
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 2.dp)) {
                 SpiralLoader(18.dp)
-                Text("Thinking", style = geist(15, color = ink.secondary), modifier = Modifier.shimmer())
+                val label = if (phase.isEmpty() || phase == "Generating" || phase.startsWith("Using") || phase == "Searching the web" || phase == "Checking your sources") "Thinking" else phase
+                AnimatedContent(label, label = "phase", transitionSpec = { fadeIn() togetherWith fadeOut() }) {
+                    Text(it, style = geist(15, color = ink.secondary), modifier = Modifier.shimmer())
+                }
             }
         } else if (shown.isNotEmpty()) {
             HandwrittenText(renderMarkdown(shown), live = generating, style = geist(16, color = ink.primary, lineHeight = 24.sp))
@@ -380,6 +517,7 @@ private fun Actions(message: Message, state: UiState, vm: ChatViewModel, done: (
                 context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, plain), null))
                 done()
             }
+            Action("Read aloud", Icons.Outlined.VolumeUp) { vm.readAloud(plain); done() }
             if (vm.canRegenerate(message)) Action("Regenerate", Icons.Outlined.Refresh) { done(); vm.regenerate() }
         }
         Action("Select text", Icons.Outlined.TextFields) { done(); select(message) }
@@ -398,7 +536,8 @@ private fun Action(label: String, icon: androidx.compose.ui.graphics.vector.Imag
 @Composable
 private fun Composer(
     state: UiState, vm: ChatViewModel, personaOpen: Boolean, setPersonaOpen: (Boolean) -> Unit,
-    focusRequester: FocusRequester, openPersonas: () -> Unit,
+    attachOpen: Boolean, setAttachOpen: (Boolean) -> Unit, attach: (TrayItem) -> Unit,
+    focusRequester: FocusRequester, openPersonas: () -> Unit, trayPage: String, sendNow: () -> Unit, talk: () -> Unit,
 ) {
     val focus = LocalFocusManager.current
     Box(
@@ -407,14 +546,53 @@ private fun Composer(
     ) {
         AnimatedContent(state.modelReady, label = "composer", transitionSpec = { fadeIn() togetherWith fadeOut() }) { ready ->
             if (!ready) {
-                DownloadComposer(state, vm::downloadModel)
+                DownloadComposer(state) { vm.downloadModel() }
             } else {
+              Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                state.photo?.let { photo ->
+                    Box(Modifier.padding(start = 6.dp, top = 6.dp)) {
+                        val bitmap = remember(photo.name) { android.graphics.BitmapFactory.decodeFile(vm.photoFile(photo.name).path)?.asImageBitmap() }
+                        if (bitmap != null) Image(bitmap, null, contentScale = ContentScale.Crop, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(14.dp)))
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp).size(20.dp).background(ink.primary, CircleShape)
+                                .semantics { contentDescription = "Remove photo" }.pressable(0.85f, onClick = vm::discardPhoto),
+                        ) { Icon(androidx.compose.material.icons.Icons.Filled.Close, null, tint = ink.paper, modifier = Modifier.size(11.dp)) }
+                    }
+                }
+                val chips = state.files.map { Chip("file:" + it.name, Icons.Outlined.Description, it.name) } +
+                    state.connectors.filter { it.id in state.activeConnectors }.map { Chip(it.id, symbolIcon(it.icon), it.name) }
+                if (chips.isNotEmpty()) {
+                    ChipRow(chips) { chip -> if (chip.id.startsWith("file:")) vm.removeFile(chip.id.removePrefix("file:")) else vm.toggleConnector(chip.id) }
+                }
+                if (state.preparingPhoto) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(start = 8.dp)) {
+                        SpiralLoader(14.dp, ink.secondary)
+                        Text("Preparing photo", style = geist(13, color = ink.secondary))
+                    }
+                }
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Box(Modifier.weight(1f).padding(start = 12.dp).alpha(if (personaOpen) 0f else 1f)) {
+                    androidx.compose.foundation.layout.Box(Modifier.zIndex(1f)) {
+                        AttachControl(
+                            open = attachOpen, setOpen = setAttachOpen,
+                            items = if (trayPage == "connectors") {
+                                listOf(TrayItem("back", Icons.AutoMirrored.Outlined.ArrowBack, "Back")) +
+                                    state.connectors.map { TrayItem(it.id, symbolIcon(it.icon), it.name, on = it.id in state.activeConnectors) } +
+                                    TrayItem("server", Icons.Outlined.Dns, "Add MCP server")
+                            } else listOf(
+                                TrayItem("photos", Icons.Outlined.PhotoLibrary, "Photos", enabled = state.model.vision),
+                                TrayItem("camera", Icons.Outlined.PhotoCamera, "Camera", enabled = state.model.vision),
+                                TrayItem("files", Icons.Outlined.Description, "Files"),
+                                TrayItem("connectors", Icons.Outlined.Hub, "Connectors", on = state.activeConnectors.isNotEmpty()),
+                            ),
+                            choose = attach, enabled = !state.isBusy && !state.preparingPhoto,
+                        )
+                    }
+                    Box(Modifier.weight(1f).alpha(if (personaOpen || attachOpen) 0f else 1f)) {
                         BasicTextField(
                             value = state.draft,
                             onValueChange = vm::setDraft,
-                            enabled = !state.isBusy && !personaOpen,
+                            enabled = !state.isBusy && !personaOpen && !attachOpen,
                             textStyle = geist(16, color = ink.primary, lineHeight = 22.sp),
                             cursorBrush = SolidColor(ink.primary),
                             maxLines = 6,
@@ -425,6 +603,12 @@ private fun Composer(
                             },
                         )
                     }
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(30.dp, 38.dp).alpha(if (personaOpen) 0f else if (state.isBusy) 0.4f else 1f)
+                            .semantics { contentDescription = "Conversation mode" }
+                            .pressable(0.85f, enabled = !state.isBusy && !personaOpen) { focus.clearFocus(); setAttachOpen(false); talk() },
+                    ) { AudioLinesIcon(19.dp) }
                     AnimatedContent(
                         state.isBusy, label = "send",
                         transitionSpec = { (scaleIn(initialScale = 0.5f) + fadeIn()) togetherWith (scaleOut(targetScale = 0.5f) + fadeOut()) },
@@ -440,20 +624,22 @@ private fun Composer(
                             SendControl(
                                 personas = state.personas, activeId = state.personaId, canSend = state.canSend,
                                 open = personaOpen, setOpen = { if (it) focus.clearFocus(); setPersonaOpen(it) },
-                                send = { focus.clearFocus(); vm.send() }, choose = vm::choosePersona, addPersona = openPersonas,
+                                send = { focus.clearFocus(); sendNow() }, choose = vm::choosePersona, addPersona = openPersonas,
                             )
                         }
                     }
                 }
+              }
             }
         }
     }
 }
 
 @Composable
-private fun DownloadComposer(state: UiState, start: () -> Unit) {
-    val downloading = state.downloadProgress != null
-    val size = android.text.format.Formatter.formatShortFileSize(LocalContext.current, state.modelBytes)
+fun DownloadComposer(state: UiState, start: () -> Unit) {
+    val downloading = state.download.isDownloading
+    val size = android.text.format.Formatter.formatShortFileSize(LocalContext.current, state.model.totalBytes)
+    val name = state.model.name
     Column(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier.fillMaxWidth().pressable(0.98f, enabled = !downloading, onClick = start),
@@ -464,22 +650,22 @@ private fun DownloadComposer(state: UiState, start: () -> Unit) {
                 modifier = Modifier.size(38.dp).background(if (downloading) ink.paper else ink.primary, CircleShape),
             ) {
                 if (downloading) SpiralLoader(18.dp)
-                else Icon(if (state.downloadError == null) Icons.Outlined.ArrowDownward else Icons.Outlined.Refresh, null, tint = ink.paper, modifier = Modifier.size(18.dp))
+                else Icon(if (state.download.error == null) Icons.Outlined.ArrowDownward else Icons.Outlined.Refresh, null, tint = ink.paper, modifier = Modifier.size(18.dp))
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    if (downloading) "Downloading ${state.modelName}" else if (state.downloadError == null) "Download ${state.modelName}" else "Retry ${state.modelName}",
+                    if (downloading) "Downloading $name" else if (state.download.error == null) "Download $name" else "Retry $name",
                     style = geist(15, FontWeight.Medium, ink.primary),
                 )
                 Text(
-                    state.downloadError ?: if (downloading) "You can leave the app meanwhile" else "$size · Wi-Fi · then fully offline",
+                    state.download.error ?: if (downloading) "You can leave the app meanwhile" else "$size · Wi-Fi · then fully offline",
                     style = geist(13, color = ink.secondary), maxLines = 2,
                 )
             }
-            if (downloading) Text("${((state.downloadProgress ?: 0f) * 100).toInt()}%", style = geist(14, FontWeight.Medium, ink.primary), modifier = Modifier.padding(end = 8.dp))
+            if (downloading) Text("${((state.download.progress ?: 0f) * 100).toInt()}%", style = geist(14, FontWeight.Medium, ink.primary), modifier = Modifier.padding(end = 8.dp))
         }
         if (downloading) {
-            val p by animateFloatAsState(state.downloadProgress ?: 0f, tween(600), label = "progress")
+            val p by animateFloatAsState(state.download.progress ?: 0f, tween(600), label = "progress")
             Box(Modifier.padding(horizontal = 6.dp).padding(bottom = 4.dp).fillMaxWidth().height(3.dp).background(ink.hairline, CircleShape)) {
                 Box(Modifier.fillMaxWidth(p.coerceAtLeast(0.01f)).height(3.dp).background(ink.primary, CircleShape))
             }

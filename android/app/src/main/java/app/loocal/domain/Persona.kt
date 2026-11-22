@@ -10,6 +10,9 @@ data class Persona(
     val name: String,
     val icon: String,
     val prompt: String,
+    /** The errand bot's body for this persona (a BotShape name), and its colour (a BotTint name). */
+    val shape: String? = null,
+    val tint: String? = null,
 ) {
     companion object {
         const val LIMIT = 3

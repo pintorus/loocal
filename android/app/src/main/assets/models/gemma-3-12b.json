@@ -1,0 +1,10 @@
+{
+  "id": "gemma-3-12b",
+  "name": "Gemma 3 12B",
+  "detail": "Deepest · words only",
+  "repository": "bartowski/mlabonne_gemma-3-12b-it-abliterated-GGUF",
+  "revision": "7cb19be8d7c1ee4dfcb9d8f7b779be240bf5bf39",
+  "files": [
+    { "path": "mlabonne_gemma-3-12b-it-abliterated-Q4_0.gguf", "size": 6909282976, "sha256": "da8775d0c8e33d6622413b0dce281fb4e119518f678530821f56660c4f6527de" }
+  ]
+}

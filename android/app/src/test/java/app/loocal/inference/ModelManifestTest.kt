@@ -2,27 +2,37 @@ package app.loocal.inference
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 class ModelManifestTest {
-    private val manifest = Json.decodeFromString(ModelManifest.serializer(), File("src/main/assets/model-4b.json").readText())
+    private val json = Json { ignoreUnknownKeys = true }
+    private fun load(id: String) = json.decodeFromString(ModelManifest.serializer(), File("src/main/assets/models/$id.json").readText())
+    private val all = listOf("qwen3-vl-4b", "qwen3-vl-8b", "gemma-3-12b").map(::load)
 
-    @Test fun shippedManifestIsPinned() {
-        assertTrue(manifest.isPinned)
-        assertTrue(manifest.files.single().path.endsWith(".gguf"))
+    @Test fun everyShippedManifestIsPinned() = all.forEach { assertTrue(it.id, it.isPinned) }
+
+    @Test fun visionModelsHaveTheirProjectorAndGemmaIsWordsOnly() {
+        assertTrue(load("qwen3-vl-4b").vision)
+        assertTrue(load("qwen3-vl-8b").vision)
+        assertFalse(load("gemma-3-12b").vision)
+        all.forEach { assertTrue(it.weights.path.endsWith(".gguf") && !it.weights.isVision) }
+    }
+
+    @Test fun namesMatchTheIosApp() {
+        assertEquals(listOf("Qwen3 VL 4B", "Qwen3 VL 8B", "Gemma 3 12B"), all.map { it.name })
     }
 
     @Test fun urlUsesPinnedRevision() {
-        assertEquals(
-            "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF/resolve/ae44f08e1392f39c0e474af10c3ff8355c8b6688/Qwen_Qwen3-4B-Instruct-2507-Q4_0.gguf",
-            manifest.url(manifest.files.single()),
-        )
+        val m = load("qwen3-vl-8b")
+        assertEquals("https://huggingface.co/${m.repository}/resolve/${m.revision}/mmproj-F16.gguf", m.url(m.projector!!))
     }
 
     @Test fun unpinnedManifestIsRefused() {
-        assertTrue(!manifest.copy(revision = "main").isPinned)
-        assertTrue(!manifest.copy(files = emptyList()).isPinned)
+        val m = load("qwen3-vl-4b")
+        assertFalse(m.copy(revision = "main").isPinned)
+        assertFalse(m.copy(files = emptyList()).isPinned)
     }
 }

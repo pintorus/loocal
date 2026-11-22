@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.PauseCircle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -104,8 +105,8 @@ fun SectionLabel(text: String, modifier: Modifier = Modifier) {
 
 /** Errors drop in from the top instead of blocking the screen; swipe up or tap to dismiss. */
 @Composable
-fun Toast(message: String?, onDismiss: () -> Unit) {
-    LaunchedEffect(message) { if (message != null) { delay(6000); onDismiss() } }
+fun Toast(message: String?, onDismiss: () -> Unit, isError: Boolean = true) {
+    LaunchedEffect(message) { if (message != null) { delay(if (isError) 6000 else 4000); onDismiss() } }
     AnimatedVisibility(
         visible = message != null,
         enter = slideInVertically { -it } + fadeIn() + scaleIn(initialScale = 0.96f),
@@ -124,7 +125,7 @@ fun Toast(message: String?, onDismiss: () -> Unit) {
                 .pointerInput(Unit) { detectVerticalDragGestures { _, dy -> if (dy < -8) onDismiss() } }
                 .padding(horizontal = 16.dp, vertical = 13.dp),
         ) {
-            Icon(Icons.Outlined.ErrorOutline, null, tint = ink.primary, modifier = Modifier.padding(top = 1.dp).width(18.dp))
+            Icon(if (isError) Icons.Outlined.ErrorOutline else Icons.Outlined.PauseCircle, null, tint = ink.primary, modifier = Modifier.padding(top = 1.dp).width(18.dp))
             Spacer(Modifier.width(10.dp))
             Text(message.orEmpty(), style = geist(14, color = ink.primary, lineHeight = androidx.compose.ui.unit.TextUnit(19f, androidx.compose.ui.unit.TextUnitType.Sp)))
         }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Loocal loop, black on white (same curve as LoopGeometry). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M27.000,67.500 C37.017,67.500 42.156,59.139 42.806,51.723 C43.324,45.812 40.990,40.500 36.000,40.500 C31.009,40.500 28.676,45.812 29.194,51.723 C29.844,59.139 34.983,67.500 45.000,67.500 C55.017,67.500 60.156,59.139 60.806,51.723 C61.324,45.812 58.990,40.500 54.000,40.500 C49.010,40.500 46.676,45.812 47.194,51.723 C47.844,59.139 52.983,67.500 63.000,67.500 C73.017,67.500 78.156,59.139 78.806,51.723 C79.324,45.812 76.990,40.500 72.000,40.500 C67.010,40.500 64.683,45.812 65.205,51.723 C65.862,59.139 71.003,67.500 81.000,67.500" android:strokeColor="#111111" android:strokeWidth="3.15" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" />
+</vector>

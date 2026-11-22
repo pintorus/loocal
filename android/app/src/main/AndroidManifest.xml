@@ -4,21 +4,70 @@
     <!-- Network is used only to download model files. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Each one is asked only when you use what needs it: the Calendar connector and events,
+         places near you, and reminder notifications. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Conversation mode. Speech is recognized on the phone only. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- A reply keeps going when you leave the app, with an ongoing notification. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:label="Loocal"
+        android:icon="@mipmap/ic_launcher_loop"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize" />
+        <!-- Two launcher entries, one per app icon (Settings › Appearance › App icon); only one is enabled at a time. -->
+        <activity-alias
+            android:name=".LoopIcon"
+            android:exported="true"
+            android:enabled="true"
+            android:icon="@mipmap/ic_launcher_loop"
+            android:roundIcon="@mipmap/ic_launcher_loop"
+            android:targetActivity=".MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity-alias>
+        <activity-alias
+            android:name=".BotIcon"
+            android:exported="true"
+            android:enabled="false"
+            android:icon="@mipmap/ic_launcher_bot"
+            android:roundIcon="@mipmap/ic_launcher_bot"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity-alias>
+        <service
+            android:name=".ReplyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="On-device language model inference: finishing a reply the user asked for after they leave the app." />
+        </service>
+        <receiver android:name=".tools.ReminderReceiver" android:exported="false" />
+        <receiver android:name=".tools.RoutineReceiver" android:exported="false" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
