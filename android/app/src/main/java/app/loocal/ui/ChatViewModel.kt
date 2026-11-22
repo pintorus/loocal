@@ -33,6 +33,7 @@ import app.loocal.ui.theme.Appearance
 import app.loocal.tools.ActionRunner
 import app.loocal.tools.Connector
 import app.loocal.tools.ConnectorHub
+import app.loocal.tools.SourceIntent
 import app.loocal.tools.McpClient
 import app.loocal.tools.McpServer
 import app.loocal.tools.Memory
@@ -509,12 +510,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 val s = _state.value
                 val question = s.chat.messages.lastOrNull { it.role == Role.USER }?.text.orEmpty()
                 // Asking for a search in so many words turns it on for this reply.
-                val active = if (WebSearch.explicitlyAsked(question)) s.activeConnectors + Connector.WEB.id else s.activeConnectors
-                val definitions = toolDefinitions(active)
+                val switchedOn = if (WebSearch.explicitlyAsked(question)) s.activeConnectors + Connector.WEB.id else s.activeConnectors
+                val definitions = toolDefinitions(switchedOn)
                 var system = prompts.systemPrompt(s.persona)
+                // "Check my calendar" reads the calendar even when it isn't switched on; a source that
+                // isn't allowed is named to the model so it says so instead of inventing.
+                val (asked, refusal) = ConnectorHub.resolve(app, SourceIntent.wanted(question) - switchedOn)
+                val active = switchedOn + asked
+                if (refusal.isNotEmpty()) system += "\n\n" + refusal
 
                 // Built-in connectors are read right before the reply and join the system prompt.
-                val read = Connector.BUILT_IN.filter { it.id in active && it.id != Connector.WEB.id }
+                val read = Connector.BUILT_IN.filter { it.id in active && it.id != Connector.WEB.id && it.id != Connector.MAPS.id }
                 if (read.isNotEmpty()) {
                     _state.update { it.copy(phase = "Checking your sources") }
                     val boxes = read.map { it.use() }
@@ -534,7 +540,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     system += "\n\n" + action.note(error == null, error)
                 }
                 // Maths, dates, places, a linked page, translation: worked out for the model.
-                val found = ToolBelt.run(app, question, ::showTool)
+                val found = ToolBelt.run(app, question, active, ::showTool)
                 if (found.isNotEmpty()) system += "\n\n" + found
                 system += "\n\n" + CAPABILITIES
                 if (s.memoryOn && tools.memories.isNotEmpty()) system += "\n\n" + Memory.prompt(tools.memories)
@@ -652,8 +658,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             _state.update { it.copy(memories = tools.memories) }
             parts.add(action.note(error == null, error))
         }
-        ToolBelt.run(app, question) {}.takeIf { it.isNotEmpty() }?.let(parts::add)
+        ToolBelt.run(app, question, emptySet()) {}.takeIf { it.isNotEmpty() }?.let(parts::add)
         val s = _state.value
+        val (asked, refusal) = ConnectorHub.resolve(app, SourceIntent.wanted(question))
+        if (asked.isNotEmpty()) parts.add(ConnectorHub.context(app, asked, question, tools.reminders))
+        if (refusal.isNotEmpty()) parts.add(refusal)
         if ((Connector.WEB.id in s.activeConnectors && WebSearch.wantsSearch(question)) || WebSearch.explicitlyAsked(question)) {
             parts.add(call(WebSearch.definition, WebSearch.arguments(WebSearch.searchQuery(question))).first + "\nAnswer in a few spoken sentences.")
         }
@@ -789,14 +798,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** Fetches what an errand reads, in parallel with every other errand on the go. */
     private fun prepare(run: ErrandRun) {
-        val active = run.sources.toSet() - Connector.WEB.id // the web is searched while writing
-        if (active.isEmpty()) return
+        val picked = run.sources.toSet() - Connector.WEB.id // the web is searched while writing
+        // "What have I got next month" reads the calendar even if no source was picked.
+        val (asked, refusal) = ConnectorHub.resolve(app, SourceIntent.wanted(run.instructions) - picked)
+        val active = picked + asked
+        if (active.isEmpty()) { if (refusal.isNotEmpty()) errandContexts[run.id] = viewModelScope.async { refusal }; return }
         val names = _state.value.connectors.filter { it.id in active }.joinToString(", ") { it.name }
         errandContexts[run.id] = viewModelScope.async {
             updateRun(run.id) { if (it.isActive) it.copy(stage = "Reading $names") else it }
             val context = ConnectorHub.context(app, active, run.instructions, tools.reminders)
             updateRun(run.id) { if (it.status == ErrandRun.Status.QUEUED) it.copy(stage = ErrandRun.NEXT_UP) else it }
-            context
+            listOf(context, refusal).filter { it.isNotEmpty() }.joinToString("\n\n")
         }
     }
 
@@ -818,7 +830,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             val persona = s.personas.firstOrNull { it.id == run.personaId }?.prompt?.trim().orEmpty()
             var system = (if (persona.isEmpty()) "" else persona + "\n\n") + ErrandStore.SYSTEM_PROMPT + "\n\nIt is now " + ErrandStore.now() + "."
             if (s.memoryOn && tools.memories.isNotEmpty()) system += "\n\n" + Memory.prompt(tools.memories)
-            ToolBelt.run(app, run.instructions) {}.takeIf { it.isNotEmpty() }?.let { system += "\n\n" + it }
+            ToolBelt.run(app, run.instructions, emptySet()) {}.takeIf { it.isNotEmpty() }?.let { system += "\n\n" + it }
             errandContexts[run.id]?.let { gathered ->
                 updateRun(run.id) { it.copy(stage = "Finishing reading") }
                 gathered.await().takeIf { it.isNotEmpty() }?.let { system += "\n\n" + it }
@@ -916,6 +928,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     companion object {
         /** What the app around the model can do, so it never claims it can't look things up. */
-        const val CAPABILITIES = "You run inside Loocal, on the user's phone. Loocal itself can: search the web and read links, find places near the user and travel times (using their location), do exact maths and date counts, translate, add reminders and calendar events, and remember things. When Loocal has done one of these for this message, its results are above: use them. Never say you have no location, internet or calendar access. If a request needs one of these and no result is above, ask them to say it plainly, for example “find restaurants near me”."
+        const val CAPABILITIES = "You run inside Loocal, on the user's phone. Loocal itself can: search the web and read links, find places near the user and travel times (using their location), do exact maths and date counts, translate, read the user's calendar and reminders and add to them, and remember things. When Loocal has done one of these for this message, its results are above: use them. Never say you have no location, internet or calendar access. Anything about the user's own life (their events, reminders, plans) must come from results above: never make it up. If they ask about their calendar and no calendar is above, say Loocal couldn't read it. If a request needs one of these and no result is above, ask them to say it plainly, for example “find restaurants near me”."
     }
 }

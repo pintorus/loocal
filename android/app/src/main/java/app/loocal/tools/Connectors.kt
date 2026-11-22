@@ -37,7 +37,8 @@ data class Connector(val id: String, val name: String, val icon: String, val det
         val CLIPBOARD = Connector("clipboard", "Clipboard", "doc.on.clipboard", "What you last copied")
         val WIKIPEDIA = Connector("wikipedia", "Wikipedia", "globe", "Looks your question up online")
         val WEB = Connector("web", "Web search", "magnifyingglass", "Lets the model search the web")
-        val BUILT_IN = listOf(WEB, CALENDAR, REMINDERS, CLIPBOARD, WIKIPEDIA)
+        val MAPS = Connector("maps", "Maps", "map", "Searches the map around you")
+        val BUILT_IN = listOf(WEB, MAPS, CALENDAR, REMINDERS, CLIPBOARD, WIKIPEDIA)
 
         fun mcp(server: McpServer) = Connector(server.connectorId, server.name, "server.rack", "${server.tools.size} tools · ${URL(server.url).host}")
     }
@@ -69,7 +70,7 @@ object ConnectorHub {
 
     suspend fun context(context: Context, active: Set<String>, prompt: String, reminders: List<Reminder>): String = withContext(Dispatchers.IO) {
         val parts = mutableListOf<String>()
-        if (Connector.CALENDAR.id in active) calendar(context)?.let(parts::add)
+        if (Connector.CALENDAR.id in active) calendar(context, SourceIntent.calendarWindow(prompt))?.let(parts::add)
         if (Connector.REMINDERS.id in active) parts.add(remindersText(reminders))
         if (Connector.CLIPBOARD.id in active) {
             val text = withContext(Dispatchers.Main) {
@@ -81,29 +82,50 @@ object ConnectorHub {
         if (parts.isEmpty()) "" else "Context from the user's connected sources (use it when relevant):\n\n" + parts.joinToString("\n\n")
     }
 
-    /** Next 7 days from the phone's calendars (Calendar Provider, read-only). */
-    fun calendar(context: Context): String? {
-        val start = System.currentTimeMillis()
-        val end = start + 7L * 24 * 3600 * 1000
-        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().appendPath(start.toString()).appendPath(end.toString()).build()
-        val lines = runCatching {
+    /** Whether Loocal may read this source now. */
+    fun isAllowed(context: Context, id: String) = when (id) {
+        Connector.CALENDAR.id -> context.checkSelfPermission(android.Manifest.permission.READ_CALENDAR) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        else -> true // reminders and the clipboard need no permission on Android
+    }
+
+    /**
+     * Sources a request asks for in so many words. Allowed ones come back to be read; for any that
+     * aren't, a note tells the model so it says that rather than guessing. (The screen asks for the
+     * permission before sending, so nothing is asked here.)
+     */
+    fun resolve(context: Context, wanted: Set<String>): Pair<Set<String>, String> {
+        val allowed = wanted.filter { isAllowed(context, it) }.toSet()
+        val refused = (wanted - allowed).map { id -> Connector.BUILT_IN.firstOrNull { it.id == id }?.name ?: id }
+        if (refused.isEmpty()) return allowed to ""
+        return allowed to "Loocal isn't allowed to read the user's ${refused.joinToString(" and ")}, so you can't see it. Say so plainly, and that they can allow it in Android Settings › Apps › Loocal › Permissions. Never guess what's in it."
+    }
+
+    /** The phone's calendars over [window] (Calendar Provider, read-only): the user's real events, all of them. */
+    fun calendar(context: Context, window: SourceIntent.Window): String? {
+        if (!isAllowed(context, Connector.CALENDAR.id)) return null
+        val long = window.end - window.start > 8 * 86_400_000L
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().appendPath(window.start.toString()).appendPath(window.end.toString()).build()
+        val all = runCatching {
             context.contentResolver.query(
                 uri, arrayOf(CalendarContract.Instances.TITLE, CalendarContract.Instances.BEGIN, CalendarContract.Instances.ALL_DAY, CalendarContract.Instances.EVENT_LOCATION),
                 null, null, CalendarContract.Instances.BEGIN + " ASC",
             )?.use { c ->
                 val out = mutableListOf<String>()
-                while (c.moveToNext() && out.size < 14) {
-                    val allDay = c.getInt(2) == 1
+                while (c.moveToNext()) {
                     val begin = Date(c.getLong(1))
-                    val whenText = if (allDay) dayFormat.format(begin) + " (all day)" else dayTimeFormat.format(begin)
-                    val location = c.getString(3)?.takeIf { it.isNotBlank() }?.let { " @ $it" }.orEmpty()
+                    val day = (if (long) java.text.SimpleDateFormat("EEE d MMM", Locale.getDefault()) else dayFormat).format(begin)
+                    val whenText = if (c.getInt(2) == 1) "$day (all day)" else day + " " + java.text.SimpleDateFormat("HH:mm", Locale.getDefault()).format(begin)
+                    val location = if (long) "" else c.getString(3)?.takeIf { it.isNotBlank() }?.let { " @ $it" }.orEmpty()
                     out.add("- $whenText: ${c.getString(0) ?: "Untitled"}$location")
                 }
                 out
             }
-        }.getOrNull() ?: return null // no permission
-        if (lines.isEmpty()) return "Calendar: nothing scheduled in the next 7 days."
-        return ("Calendar (next 7 days):\n" + lines.joinToString("\n")).take(BUDGET)
+        }.getOrNull() ?: return null
+        val events = all.take(if (long) 40 else 14)
+        val span = dayFormat.format(Date(window.start)) + " – " + dayFormat.format(Date(window.end - 1))
+        if (events.isEmpty()) return "Calendar (${window.label}, $span): nothing scheduled. Say the calendar is clear then."
+        val more = if (all.size > events.size) "\n(and ${all.size - events.size} more)" else ""
+        return ("Calendar (${window.label}, $span), the user's real events, all of them:\n" + events.joinToString("\n") + more).take(if (long) BUDGET * 2 else BUDGET)
     }
 
     private fun remindersText(list: List<Reminder>): String {
@@ -290,3 +312,69 @@ object Http {
 
 private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
+
+
+/**
+ * Which of the user's own sources a request is about, from its words alone (iOS `SourceIntent`),
+ * so "check my calendar" or "what have I got next month" reads the calendar without a Calendar island.
+ */
+object SourceIntent {
+    private val calendarWords = listOf(
+        "calendar", "agenda", "schedule", "meeting", "appointment", "event", "going on", "am i free", "am i busy", "i'm free", "im free",
+        "what do i have", "what have i got", "what i have", "what's on", "whats on", "my plans", "plans for", "my day", "my week", "my weekend", "my month",
+        "calendrier", "rendez-vous", "rdv", "reunion", "evenement", "ce que j'ai", "qu'est-ce que j'ai", "j'ai quoi", "je suis libre", "suis-je libre",
+        "suis libre", "mon planning", "planning", "ma journee", "ma semaine", "mon week-end", "mon mois", "mes plans", "prevu",
+    )
+    private val reminderWords = listOf("reminders", "my reminder", "to-do", "todo", "to do list", "my tasks", "what's due", "whats due", "need to do", "rappels", "mes rappels", "taches", "a faire", "dois faire")
+    private val clipboardWords = listOf("clipboard", "i copied", "i've copied", "presse-papier", "j'ai copie")
+
+    fun folded(text: String): String =
+        java.text.Normalizer.normalize(text.lowercase(), java.text.Normalizer.Form.NFD).replace(Regex("\\p{Mn}"), "").replace("’", "'")
+
+    fun wanted(text: String): Set<String> {
+        val t = folded(text)
+        return buildSet {
+            if (calendarWords.any { t.contains(it) }) add(Connector.CALENDAR.id)
+            if (reminderWords.any { t.contains(it) }) add(Connector.REMINDERS.id)
+            if (clipboardWords.any { t.contains(it) }) add(Connector.CLIPBOARD.id)
+        }
+    }
+
+    data class Window(val start: Long, val end: Long, val label: String)
+
+    /** The stretch of calendar the words are about; the next 7 days when they don't say. */
+    fun calendarWindow(text: String, now: Calendar = Calendar.getInstance()): Window {
+        val t = folded(text)
+        fun has(words: List<String>) = words.any { t.contains(it) }
+        val nowMs = now.timeInMillis
+        val today = (now.clone() as Calendar).apply { set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }
+        fun day(offset: Int) = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, offset) }.timeInMillis
+        Regex("""(?:next|coming|prochains?)\s+(\d{1,2})\s+(?:days|jours)|(\d{1,2})\s+(?:prochains|next)\s+(?:jours|days)""").find(t)?.let { m ->
+            val days = (m.groupValues[1].ifEmpty { m.groupValues[2] }).toInt().coerceIn(1, 60)
+            return Window(nowMs, day(days + 1), "next $days days")
+        }
+        fun monthBounds(add: Int): Pair<Long, Long> {
+            val c = (today.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, 1); add(Calendar.MONTH, add) }
+            val start = c.timeInMillis; c.add(Calendar.MONTH, 1)
+            return start to c.timeInMillis
+        }
+        fun weekBounds(add: Int): Pair<Long, Long> {
+            val c = (today.clone() as Calendar).apply { set(Calendar.DAY_OF_WEEK, firstDayOfWeek); if (timeInMillis > today.timeInMillis) add(Calendar.WEEK_OF_YEAR, -1); add(Calendar.WEEK_OF_YEAR, add) }
+            val start = c.timeInMillis; c.add(Calendar.WEEK_OF_YEAR, 1)
+            return start to c.timeInMillis
+        }
+        if (has(listOf("next month", "mois prochain", "coming month"))) monthBounds(1).let { return Window(it.first, it.second, "next month") }
+        if (has(listOf("this month", "ce mois", "my month", "mon mois", "rest of the month"))) return Window(nowMs, monthBounds(0).second, "the rest of this month")
+        if (has(listOf("next week", "semaine prochaine"))) weekBounds(1).let { return Window(it.first, it.second, "next week") }
+        if (has(listOf("weekend", "week-end", "week end"))) {
+            val weekday = now.get(Calendar.DAY_OF_WEEK) // 1 Sunday … 7 Saturday
+            if (weekday == Calendar.SATURDAY || weekday == Calendar.SUNDAY) return Window(nowMs, day(if (weekday == Calendar.SATURDAY) 2 else 1), "this weekend")
+            return Window(day(7 - weekday), day(9 - weekday), "the weekend")
+        }
+        if (has(listOf("week ahead", "coming week", "7 days", "sept jours"))) return Window(nowMs, day(7), "next 7 days")
+        if (has(listOf("this week", "cette semaine", "my week", "ma semaine", "rest of the week"))) return Window(nowMs, weekBounds(0).second, "the rest of this week")
+        if (has(listOf("tomorrow", "demain"))) return Window(day(1), day(2), "tomorrow")
+        if (has(listOf("today", "tonight", "aujourd'hui", "ce soir", "my day", "ma journee"))) return Window(nowMs, day(1), "today")
+        return Window(nowMs, day(7), "next 7 days")
+    }
+}

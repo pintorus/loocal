@@ -160,6 +160,8 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
                 else -> {}
             }
             if (Places.detect(text) != null) add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            // "What have I got tomorrow": ask for the calendar now, or the model is told it can't read it.
+            if (app.loocal.tools.Connector.CALENDAR.id in app.loocal.tools.SourceIntent.wanted(text)) add(Manifest.permission.READ_CALENDAR)
         }
         withPermissions(needed) { vm.send() }
     }

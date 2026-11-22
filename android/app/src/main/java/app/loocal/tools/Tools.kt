@@ -34,8 +34,11 @@ import kotlin.math.sqrt
  * spotted in your words, shows a box in the reply, and hands the model a fact to build on.
  */
 object ToolBelt {
-    /** Runs every tool the message calls for. [show] adds or updates a box in the reply. */
-    suspend fun run(context: Context, message: String, show: (ToolUse) -> Unit): String {
+    /**
+     * Runs every tool the message calls for. [show] adds or updates a box in the reply. [force] holds
+     * tools placed in the prompt as islands (Maps), which run even when the words alone wouldn't call for them.
+     */
+    suspend fun run(context: Context, message: String, force: Set<String>, show: (ToolUse) -> Unit): String {
         val notes = mutableListOf<String>()
         Calculator.answer(message)?.let { calc ->
             show(ToolUse(kind = "calc", icon = "function", running = "Calculating", done = "Calculated", detail = calc.shown, status = ToolUse.Status.DONE))
@@ -56,7 +59,7 @@ object ToolBelt {
             )
             show(box)
         }
-        Places.detect(message)?.let { place ->
+        (Places.detect(message) ?: if (Connector.MAPS.id in force) Places.forced(message) else null)?.let { place ->
             var box = ToolUse(kind = "places", icon = if (place.isRoute) "car" else "mappin.and.ellipse", running = if (place.isRoute) "Working out the trip" else "Looking around you", done = if (place.isRoute) "Checked the map" else "Searched the map", detail = place.query)
             show(box)
             Places.run(context, place).fold(
@@ -261,6 +264,17 @@ object Places {
         val kind = kinds.firstOrNull { k -> if (k.contains(" ")) lower.contains(k) else k in words || "${k}s" in words || "${k}es" in words }
         val asking = asks.any { lower.contains(it) }
         if (!((hasNear && (kind != null || asking)) || (kind != null && asking))) return null
+        var query = " $lower "
+        nearby.filter { it.contains(" ") }.forEach { query = query.replace(it, " ") }
+        query = query.replace(Regex("[?!.,;:]"), " ")
+        val kept = query.split(" ").filter { it.isNotEmpty() && it !in filler }.joinToString(" ").trim()
+        return Request(kept.ifEmpty { kind ?: "restaurants" }, false)
+    }
+
+    /** A Maps island in the prompt: search for whatever the words ask, even without "near me". */
+    fun forced(message: String): Request {
+        val lower = message.lowercase()
+        val kind = kinds.firstOrNull { lower.contains(it) }
         var query = " $lower "
         nearby.filter { it.contains(" ") }.forEach { query = query.replace(it, " ") }
         query = query.replace(Regex("[?!.,;:]"), " ")

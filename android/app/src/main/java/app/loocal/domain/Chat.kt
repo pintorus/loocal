@@ -42,7 +42,8 @@ data class Chat(
     val title: String
         get() = messages.firstOrNull { it.role == Role.USER }?.text?.lineSequence()?.first()?.take(60) ?: "New chat"
 
-    fun appending(message: Message) = copy(messages = messages + message, updatedAt = message.createdAt)
+    /** A chat takes its date from its first message (typed, spoken, or continued from an errand), not from when it was opened. */
+    fun appending(message: Message) = copy(messages = messages + message, updatedAt = message.createdAt, createdAt = if (messages.isEmpty()) message.createdAt else createdAt)
 
     /** Edit rewinds the chat: drops the edited prompt and everything after it. */
     fun rewoundTo(messageId: String): Chat {
