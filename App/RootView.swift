@@ -200,7 +200,6 @@ struct RootView: View {
     }
 
     private func continueInChat(_ run: ErrandRun) {
-        guard !store.isBusy else { store.error = "Wait for the current reply to finish, then continue in chat."; return }
         withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { store.continueInChat(run) }
         go(.chat)
     }
@@ -383,7 +382,8 @@ struct ChatView: View {
     var openPersonas: () -> Void = {}
     @State private var photo: PhotosPickerItem?
     @State private var isPreparingPhoto = false
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
+    @State private var islandField = IslandFieldController()
     @State private var viewport: CGFloat = 600
     @Namespace private var voiceSource
     @State private var conversationOpen = false
@@ -403,26 +403,6 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ModelSelector(options: ModelChoice.all, disabled: store.isBusy, selection: $store.selectedModelID, dimmed: !store.download.isReady)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 6).padding(.bottom, 8)
-                .overlay(alignment: .bottom) {
-                    if store.isTemporary {
-                        HStack(spacing: 5) {
-                            LoopGhostMark(progress: 1, color: Ink.secondary).frame(width: 22)
-                            Text(store.current.messages.isEmpty ? "Temporary chat · nothing is saved" : "Temporary")
-                                .font(.geist(12, .medium))
-                                .contentTransition(.opacity)
-                        }
-                        .foregroundStyle(Ink.secondary)
-                        .offset(y: 18)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                    }
-                }
-                .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.isTemporary)
-                .animation(.smooth, value: store.current.messages.isEmpty)
-                .dismissesKeyboardOnTap()
-                .zIndex(1)
             ZStack {
                 if store.current.messages.isEmpty {
                     EmptyChatView(temporary: store.isTemporary, toggleTemporary: store.toggleTemporary)
@@ -438,11 +418,21 @@ struct ChatView: View {
             .simultaneousGesture(TapGesture().onEnded { closeAttach() })
             .animation(.spring(response: 0.45, dampingFraction: 0.9), value: store.current.messages.isEmpty)
             .animation(.spring(response: 0.45, dampingFraction: 0.9), value: store.selectedID)
+            // The chat runs on under the model selector too, fading into the paper at the top.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                selectorBar.background { TopFade() }
+            }
             // The chat runs on under the prompt bar, fading into the paper toward the nav.
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
-                    if store.current.messages.isEmpty && store.download.isReady && store.draft.isEmpty {
+                    if store.current.messages.isEmpty && store.composerReady && store.draft.isEmpty && !hasAttachments {
                         suggestions.transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    if hasAttachments && store.composerReady {
+                        AttachmentShelf(photo: attachedPhoto, files: store.attachedFiles, preparing: isPreparingPhoto,
+                                        removePhoto: { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { store.discardAttachment() } },
+                                        removeFile: { file in withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { store.attachedFiles.removeAll { $0.id == file.id } } })
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                     composer
                 }
@@ -450,12 +440,30 @@ struct ChatView: View {
             }
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.draft.isEmpty)
+        .animation(.spring(response: 0.45, dampingFraction: 0.72), value: store.attachedFiles)
+        .animation(.spring(response: 0.45, dampingFraction: 0.72), value: store.attachmentName)
+        .animation(.spring(response: 0.45, dampingFraction: 0.72), value: isPreparingPhoto)
         .background(Ink.paper)
         // Only one tray at a time: opening + closes the persona capsule and vice versa.
         .onChange(of: attachOpen) { _, open in if open { composerFocused = false; withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { personaOpen = false } } }
         .onChange(of: personaOpen) { _, open in if open { composerFocused = false; closeAttach() } }
+        .onAppear { IslandArt.photos = store.files.images }
         .onChange(of: store.selectedModelID) { _, _ in
             if !store.model.vision { withAnimation(.smooth) { store.discardAttachment() } }
+        }
+        // Whatever joins the message also lands in the text as an island, at the cursor;
+        // whatever leaves it takes its island along.
+        .onChange(of: store.activeConnectors) { old, new in
+            for id in new.subtracting(old) { if let connector = store.connectors.first(where: { $0.id == id }) { place(.connector(connector)) } }
+            for id in old.subtracting(new) { unplace(ref: id) }
+        }
+        .onChange(of: store.attachedFiles) { old, new in
+            for file in new where !old.contains(file) { place(.file(file)) }
+            for file in old where !new.contains(file) { unplace(ref: file.id.uuidString) }
+        }
+        .onChange(of: store.attachmentName) { old, new in
+            if let old { unplace(ref: old) }
+            if let new { place(.photo(new)) }
         }
         .onChange(of: photo) { _, item in
             guard let item else { return }
@@ -480,7 +488,7 @@ struct ChatView: View {
                 .navigationTransition(.zoom(sourceID: "voice", in: voiceSource))
         }
         .sheet(item: $selecting) { message in
-            SelectTextSheet(text: MessageView.rendered(message.text))
+            SelectTextSheet(text: MessageView.rendered(message.role == .user ? message.readable : message.text))
         }
         .alert("Add MCP server", isPresented: $serverPrompt) {
             TextField("https://server.example/mcp", text: $serverName)
@@ -495,6 +503,30 @@ struct ChatView: View {
         } message: { Text("Loocal connects over HTTPS and lets the model call this server’s tools. Its token stays in the Keychain.") }
     }
 
+    /// The model selector, with the chat fading out under it as it scrolls up.
+    private var selectorBar: some View {
+        ModelSelector(options: ModelChoice.all, disabled: store.isWorking, selection: $store.selectedModelID, dimmed: !store.download.isReady)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 6).padding(.bottom, 8)
+            .overlay(alignment: .bottom) {
+                if store.isTemporary {
+                    HStack(spacing: 5) {
+                        LoopGhostMark(progress: 1, color: Ink.secondary).frame(width: 22)
+                        Text(store.current.messages.isEmpty ? "Temporary chat · nothing is saved" : "Temporary")
+                            .font(.geist(12, .medium))
+                            .contentTransition(.opacity)
+                    }
+                    .foregroundStyle(Ink.secondary)
+                    .offset(y: 18)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.isTemporary)
+            .animation(.smooth, value: store.current.messages.isEmpty)
+            .dismissesKeyboardOnTap()
+            .zIndex(1)
+    }
+
     /// The scripted voice mock is used only in the simulator demo.
     private static var demoMode: Bool {
         #if DEBUG && targetEnvironment(simulator)
@@ -504,9 +536,63 @@ struct ChatView: View {
         #endif
     }
 
-    private var chips: [AttachmentChip] {
-        store.attachedFiles.map { AttachmentChip(id: $0.id.uuidString, icon: "doc", title: $0.name) }
-            + store.connectors.filter { store.activeConnectors.contains($0.id) }.map { AttachmentChip(id: $0.id, icon: $0.icon, title: $0.name) }
+    /// Attachments float above the prompt box; their islands in the text point at them.
+    private var hasAttachments: Bool { store.attachmentName != nil || !store.attachedFiles.isEmpty || isPreparingPhoto }
+
+    private var attachedPhoto: UIImage? {
+        store.attachmentName.flatMap { UIImage(contentsOfFile: store.files.images.appendingPathComponent($0).path) }
+    }
+
+    /// Typed words that can turn into a tool island.
+    private var toolWords: [String: Connector] {
+        var words: [String: Connector] = [:]
+        for connector in store.connectors { words[connector.name.lowercased()] = connector }
+        words["web"] = .web
+        words["map"] = .maps
+        return words
+    }
+
+    /// A typed tool name was tapped: it becomes that tool's island, and the tool switches on.
+    private func promote(_ connector: Connector) -> Island? {
+        let island = Island.connector(connector)
+        store.draftIslands.append(island)
+        Task {
+            if !store.activeConnectors.contains(connector.id) { await store.toggleConnector(connector) }
+            // Not allowed (Calendar access refused, say): the word comes back as it was.
+            if !store.activeConnectors.contains(connector.id) {
+                for placed in store.draftIslands where placed.id == island.id {
+                    store.draft = store.draft.replacingOccurrences(of: placed.marker, with: connector.name)
+                }
+                store.draftIslands.removeAll { $0.id == island.id }
+            }
+        }
+        return island
+    }
+
+    /// Puts an island into the draft, unless one for the same thing is already there.
+    private func place(_ island: Island) {
+        guard !IslandText.present(in: store.draft, store.draftIslands).contains(where: { $0.ref == island.ref }) else { return }
+        store.draftIslands.append(island)
+        // Picked from the tray or a picker: let that close first, then the island drops in.
+        if !islandField.insert(island, delay: 0.32) {
+            store.draft += (store.draft.isEmpty || store.draft.hasSuffix(" ") ? "" : " ") + island.marker + " "
+        }
+    }
+
+    private func unplace(ref: String) {
+        for island in store.draftIslands where island.ref == ref {
+            store.draft = store.draft.replacingOccurrences(of: island.marker + " ", with: "").replacingOccurrences(of: island.marker, with: "")
+        }
+        store.draftIslands.removeAll { $0.ref == ref }
+    }
+
+    /// The person deleted an island from the text: a tool switches off with it; an
+    /// attachment stays attached, just no longer pointed at.
+    private func islandRemoved(_ island: Island) {
+        store.draftIslands.removeAll { $0.id == island.id }
+        // A tool stays on while any of its islands is still in the text.
+        let left = IslandText.present(in: store.draft, store.draftIslands).contains { $0.ref == island.ref }
+        if island.kind == .connector && !left { store.activeConnectors.remove(island.ref) }
     }
 
     private func closeAttach() {
@@ -521,7 +607,16 @@ struct ChatView: View {
 
     private func handle(_ action: AttachAction) {
         if case .toggle(let connector) = action {
-            Task { await store.toggleConnector(connector) }
+            // One pick, then the tray folds away and the island drops into the text. Picking a
+            // tool that's already in the prompt adds it again, wherever the cursor is.
+            closeAttach()
+            if store.activeConnectors.contains(connector.id) {
+                let island = Island.connector(connector)
+                store.draftIslands.append(island)
+                if !islandField.insert(island, delay: 0.32) { store.draft += " " + island.marker + " " }
+            } else {
+                Task { await store.toggleConnector(connector) } // switching on places its island
+            }
             return
         }
         closeAttach()
@@ -602,7 +697,7 @@ struct ChatView: View {
 
     /// Long-press actions on a prompt or a reply: a small pill of icons under the message.
     private func actions(for message: ChatMessage) -> some View {
-        let plain = String(MessageView.rendered(message.text).characters)
+        let plain = message.role == .user ? message.readable : String(MessageView.rendered(message.text).characters)
         return HStack(spacing: 2) {
             action("Copy", "doc.on.doc") {
                 // This device only: copied text never syncs to your other devices via Universal Clipboard.
@@ -649,7 +744,33 @@ struct ChatView: View {
     }
 
     private var suggestions: some View {
-        SuggestionRow { store.draft = $0; composerFocused = true }
+        SuggestionRow { use($0) }
+    }
+
+    /// A suggestion goes into the prompt with its tools as islands, which drop in one after
+    /// another. A tool that isn't allowed (Calendar access refused) stays a plain word.
+    private func use(_ prompt: EmptyChatView.Prompt) {
+        var text = prompt.text
+        var placed: [Island] = []
+        for connector in store.connectors where text.contains("{\(connector.id)}") {
+            let island = Island.connector(connector)
+            placed.append(island)
+            text = text.replacingOccurrences(of: "{\(connector.id)}", with: island.marker)
+        }
+        store.draftIslands += placed
+        store.draft = text
+        composerFocused = true
+        DispatchQueue.main.async { islandField.dropAll(placed) }
+        for island in placed {
+            guard let connector = store.connectors.first(where: { $0.id == island.ref }), !store.activeConnectors.contains(connector.id) else { continue }
+            Task {
+                await store.toggleConnector(connector)
+                if !store.activeConnectors.contains(connector.id) {
+                    store.draft = store.draft.replacingOccurrences(of: island.marker, with: connector.name)
+                    store.draftIslands.removeAll { $0.id == island.id }
+                }
+            }
+        }
     }
 
     /// Without a downloaded model, the prompt box itself becomes the download box.
@@ -663,57 +784,34 @@ struct ChatView: View {
             }
         }
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: store.composerReady)
-        .padding(6)
-        .background(Ink.fill, in: .rect(cornerRadius: 25))
+        // Room for the + and personas trays (46 pt, a little taller than the buttons) to open
+        // inside the box with an even margin all round.
+        .padding(10)
+        .background(Ink.fill, in: .rect(cornerRadius: 29))
         .padding(.horizontal, 12).padding(.bottom, 8)
     }
 
     private var input: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let name = store.attachmentName, let image = UIImage(contentsOfFile: store.files.images.appendingPathComponent(name).path) {
-                ZStack(alignment: .topTrailing) {
-                    Image(uiImage: image).resizable().scaledToFill().frame(width: 64, height: 64).clipShape(.rect(cornerRadius: 14))
-                    Button { withAnimation(.spring(response: 0.3)) { store.discardAttachment() } } label: {
-                        Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Ink.paper)
-                            .frame(width: 20, height: 20).background(Ink.primary, in: .circle)
-                    }
-                    .buttonStyle(PressStyle(scale: 0.85))
-                    .offset(x: 6, y: -6).accessibilityLabel("Remove photo")
-                }
-                .padding(.leading, 6).padding(.top, 6)
-                .transition(.scale(scale: 0.6, anchor: .bottomLeading).combined(with: .opacity))
-            }
-            if !chips.isEmpty {
-                ChipRow(chips: chips) { chip in
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        store.attachedFiles.removeAll { $0.id.uuidString == chip.id }
-                        store.activeConnectors.remove(chip.id)
-                    }
-                }
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-            if isPreparingPhoto {
-                HStack(spacing: 8) { SpiralLoader(size: 14, color: Ink.secondary); Text("Preparing photo") }
-                    .font(.geist(13)).foregroundStyle(Ink.secondary).padding(.leading, 8)
-                    .transition(.opacity)
-            }
             HStack(alignment: .bottom, spacing: 6) {
                 HStack(spacing: 0) {
-                    AttachControl(open: $attachOpen, connectors: store.connectors, active: store.activeConnectors, vision: store.model.vision, act: handle)
+                    AttachControl(open: $attachOpen, connectors: store.connectors, active: [], vision: store.model.vision, act: handle)
                         .disabled(store.isBusy || isPreparingPhoto)
                         .zIndex(1) // the tray unrolls over its neighbours
                 }
+                // Takes only its button's room in the row: the open tray draws over the prompt
+                // instead of pushing it aside.
+                .frame(width: 38, height: 38, alignment: .leading)
                 .zIndex(1)
-                TextField(store.persona.map { "Ask \($0.name)" } ?? "Ask anything", text: $store.draft, axis: .vertical)
-                    .font(.geist(16)).foregroundStyle(Ink.primary)
-                    .lineLimit(1...6).padding(.vertical, 9)
-                    .focused($composerFocused).disabled(store.isBusy)
+                IslandField(text: $store.draft, islands: store.draftIslands, placeholder: store.persona.map { "Ask \($0.name)" } ?? "Ask anything",
+                            focused: $composerFocused, enabled: !store.isBusy, frozen: attachOpen || personaOpen, controller: islandField,
+                            tools: toolWords, removed: islandRemoved, promote: promote)
                     // The text field is a UIKit view and wins taps over SwiftUI drawn above it,
                     // so it steps aside while a tray covers it.
                     .allowsHitTesting(!attachOpen && !personaOpen)
-                    .opacity(attachOpen || personaOpen ? 0 : 1)
-                    .animation(.easeOut(duration: 0.15), value: attachOpen || personaOpen)
-                    .accessibilityIdentifier("prompt")
+                    // Under an open tray the prompt stays put, a little dimmed.
+                    .opacity(attachOpen || personaOpen ? 0.7 : 1)
+                    .animation(.easeOut(duration: 0.2), value: attachOpen || personaOpen)
                 Button { composerFocused = false; closeAttach(); conversationOpen = true } label: {
                     AudioLinesIcon(size: 19)
                         .foregroundStyle(Ink.primary)
@@ -738,13 +836,14 @@ struct ChatView: View {
                         .transition(.scale(scale: 0.5).combined(with: .opacity))
                     } else {
                         SendControl(store: store, open: $personaOpen, canSend: store.canSend && !isPreparingPhoto, send: { composerFocused = false; store.send() }, addPersona: openPersonas)
+                            // Same as the + tray: the personas capsule covers, never pushes.
+                            .frame(width: 38, height: 38, alignment: .trailing)
                             .transition(.scale(scale: 0.5).combined(with: .opacity))
                     }
                 }
                 .animation(.spring(response: 0.35, dampingFraction: 0.7), value: store.isBusy)
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: chips)
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.attachedFiles)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: store.canSend)
         .animation(.spring(response: 0.4, dampingFraction: 0.85), value: store.attachmentName)
@@ -752,14 +851,14 @@ struct ChatView: View {
 }
 
 private struct SuggestionRow: View {
-    let choose: (String) -> Void
+    let choose: (EmptyChatView.Prompt) -> Void
     @State private var appeared = false
 
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(Array(EmptyChatView.prompts.enumerated()), id: \.element.title) { i, prompt in
-                    Button { choose(prompt.text) } label: {
+                    Button { choose(prompt) } label: {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(prompt.title).font(.geist(14, .medium)).foregroundStyle(Ink.primary)
                             Text(prompt.detail).font(.geist(13)).foregroundStyle(Ink.secondary)
@@ -785,11 +884,13 @@ struct EmptyChatView: View {
     @State private var appeared = false
     @State private var flips = 0
 
+    /// A suggestion. `{tool}` in its text (a connector id) becomes that tool's island.
     struct Prompt { let title: String; let detail: String; let text: String }
     static let prompts = [
-        Prompt(title: "Think out loud", detail: "with an idea I’m stuck on", text: "Help me think through an idea: "),
-        Prompt(title: "Explain a photo", detail: "and what’s happening in it", text: "Explain what’s happening in this photo."),
-        Prompt(title: "Draft a note", detail: "short, warm, to the point", text: "Draft a short, warm note to "),
+        Prompt(title: "Plan my day", detail: "around what’s already on it", text: "Plan my day around {calendar} and {reminders}"),
+        Prompt(title: "Find a spot", detail: "quiet, close, open now", text: "Find a quiet café near me with {maps}"),
+        Prompt(title: "Look it up", detail: "fresh from the web", text: "Search {web} for "),
+        Prompt(title: "Reply for me", detail: "short, warm, to the point", text: "Draft a short, warm reply to what’s on my {clipboard}"),
     ]
 
     var body: some View {
@@ -839,6 +940,7 @@ struct MessageView: View {
     let message: ChatMessage
     let imageDirectory: URL
     var phase = ""
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
         if message.role == .user { user } else { assistant }
@@ -848,21 +950,14 @@ struct MessageView: View {
         VStack(alignment: .trailing, spacing: 8) {
             if let files = message.files, !files.isEmpty {
                 HStack(spacing: 6) {
-                    ForEach(files, id: \.self) { name in
-                        HStack(spacing: 6) {
-                            Image(systemName: "doc").font(.system(size: 12))
-                            Text(name).font(.geist(13, .medium)).lineLimit(1)
-                        }
-                        .foregroundStyle(Ink.primary)
-                        .padding(.horizontal, 10).frame(height: 30)
-                        .overlay(Capsule().stroke(Ink.hairline))
+                    ForEach(Array(files.enumerated()), id: \.offset) { i, name in
+                        FileCard(name: name, compact: true).rotationEffect(.degrees(i % 2 == 0 ? 3 : -2))
                     }
                 }
             }
             if let photo { AttachedPhoto(image: photo) }
-            Text(message.text)
-                .font(.geist(16)).foregroundStyle(Ink.primary).lineSpacing(3)
-                .padding(.horizontal, 16).padding(.vertical, 11)
+            IslandLabel(text: message.text, islands: message.islands ?? [])
+                .padding(.horizontal, 16).padding(.vertical, 10)
                 .background(Ink.fill, in: .rect(cornerRadius: 22))
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -872,9 +967,7 @@ struct MessageView: View {
     private var assistant: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let tools = message.tools, !tools.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(tools) { ToolBox(use: $0).transition(.blurReplace.combined(with: .scale(0.96, anchor: .leading))) }
-                }
+                ToolTrail(tools: tools).transition(.opacity)
             }
             // "Thinking" stays until the first whole word is ready, so the row never hops.
             if shown.isEmpty && message.status == .generating && !(message.tools?.contains { $0.status == .running } ?? false) {
@@ -890,10 +983,20 @@ struct MessageView: View {
                 // Leaves at once, so it never crossfades under a tool box or the first words.
                 .transition(.asymmetric(insertion: .opacity, removal: .identity))
             } else if !shown.isEmpty {
-                HandwrittenText(text: Self.rendered(shown), live: message.status == .generating)
+                // A tool's widget sits in the text, right after the opening paragraph.
+                let (lead, rest) = Self.split(shown)
+                HandwrittenText(text: Self.rendered(lead), live: message.status == .generating && rest.isEmpty)
                     .font(.geist(16)).foregroundStyle(Ink.primary).lineSpacing(5)
                     .transition(.opacity)
+                widgets
+                if !rest.isEmpty {
+                    HandwrittenText(text: Self.rendered(rest), live: message.status == .generating)
+                        .font(.geist(16)).foregroundStyle(Ink.primary).lineSpacing(5)
+                        .transition(.opacity)
+                }
                 if message.status == .generating { SpiralLoader(size: 14, color: Ink.secondary).transition(.opacity) }
+            } else if message.status != .generating {
+                widgets
             }
             if message.status == .interrupted {
                 Text("Stopped · partial reply saved").font(.geist(12)).foregroundStyle(Ink.tertiary)
@@ -907,6 +1010,22 @@ struct MessageView: View {
     }
 
     private var shown: String { StreamingText.stable(message.text, live: message.status == .generating) }
+
+    @ViewBuilder private var widgets: some View {
+        let found = (message.tools ?? []).filter { $0.status == .done }.compactMap(\.widget)
+        ForEach(Array(found.enumerated()), id: \.offset) { _, widget in
+            ToolWidgetView(widget: widget)
+                .padding(.vertical, 2)
+                .transition(.scale(scale: 0.94, anchor: .top).combined(with: .opacity))
+        }
+    }
+
+    /// The first paragraph, and everything after it.
+    static func split(_ text: String) -> (String, String) {
+        guard let range = text.range(of: "\n\n") else { return (text, "") }
+        let rest = text[range.upperBound...].trimmingCharacters(in: .newlines)
+        return (String(text[..<range.lowerBound]), rest)
+    }
 
     private var photo: UIImage? {
         guard let name = message.imageName else { return nil }
@@ -942,99 +1061,6 @@ private struct AttachedPhoto: View {
 extension EnvironmentValues {
     /// Undo for an action box in a reply (a reminder, an event, a memory).
     @Entry var undoAction: (UUID) -> Void = { _ in }
-}
-
-struct ToolBox: View {
-    let use: ToolUse
-    @State private var open = false
-    @Environment(\.openURL) private var openURL
-    @Environment(\.undoAction) private var undo
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { if !use.links.isEmpty { withAnimation(.spring(response: 0.4, dampingFraction: 0.86)) { open.toggle() } } } label: {
-                HStack(spacing: 10) {
-                    ZStack {
-                        if use.status == .running {
-                            SpiralLoader(size: 14, color: Ink.primary).transition(.scale.combined(with: .opacity))
-                        } else {
-                            Image(systemName: use.status == .failed ? "exclamationmark" : use.status == .undone ? "arrow.uturn.backward" : use.icon)
-                                .font(.system(size: 12, weight: .semibold))
-                                .transition(.scale.combined(with: .opacity))
-                        }
-                    }
-                    .foregroundStyle(Ink.primary)
-                    .frame(width: 28, height: 28)
-                    .background(Ink.paper, in: .circle)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(use.title)
-                            .font(.geist(14, .medium)).foregroundStyle(use.status == .running ? Ink.secondary : Ink.primary)
-                            .shimmer(use.status == .running)
-                            .contentTransition(.opacity)
-                        if !summary.isEmpty {
-                            Text(summary).font(.geist(12)).foregroundStyle(Ink.secondary).lineLimit(1)
-                        }
-                    }
-                    if open { Spacer(minLength: 8) }
-                    if use.action?.undoable == true && use.status == .done {
-                        Button { undo(use.id) } label: {
-                            Text("Undo").font(.geist(12, .medium)).foregroundStyle(Ink.primary)
-                                .padding(.horizontal, 10).frame(height: 26)
-                                .background(Ink.paper, in: .capsule)
-                        }
-                        .buttonStyle(PressStyle(scale: 0.9))
-                        .padding(.leading, 6)
-                        .transition(.scale.combined(with: .opacity))
-                    }
-                    if !use.links.isEmpty {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(Ink.tertiary)
-                            .rotationEffect(.degrees(open ? 180 : 0))
-                            .transition(.opacity)
-                    }
-                }
-                .padding(.leading, 8).padding(.trailing, 14).padding(.vertical, 8)
-                .contentShape(.rect)
-            }
-            .buttonStyle(PressStyle(scale: 0.98))
-            .accessibilityHint(use.links.isEmpty ? "" : open ? "Hides the sources" : "Shows the sources")
-            if open {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(use.links.enumerated()), id: \.offset) { i, link in
-                        Button { openURL(link.url) } label: {
-                            HStack(spacing: 10) {
-                                Text("\(i + 1)").font(.geist(11, .medium).monospacedDigit()).foregroundStyle(Ink.tertiary).frame(width: 14)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(link.title).font(.geist(13)).foregroundStyle(Ink.primary).lineLimit(1)
-                                    Text(link.host).font(.geist(11)).foregroundStyle(Ink.secondary).lineLimit(1)
-                                }
-                                Spacer(minLength: 8)
-                                Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(Ink.tertiary)
-                            }
-                            .padding(.horizontal, 14).padding(.vertical, 7)
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(PressStyle(scale: 0.98))
-                    }
-                }
-                .padding(.bottom, 6)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .background(Ink.fill, in: .rect(cornerRadius: 18))
-        .clipShape(.rect(cornerRadius: 18))
-        .animation(.spring(response: 0.4, dampingFraction: 0.86), value: use.status)
-        .accessibilityElement(children: .contain)
-    }
-
-    /// The query, or the sources it found, in one quiet line.
-    private var summary: String {
-        if use.status == .done, !use.links.isEmpty {
-            let hosts = NSOrderedSet(array: use.links.map(\.host)).array as? [String] ?? []
-            return (use.detail.isEmpty ? "" : "“\(use.detail)” · ") + "\(use.links.count) result\(use.links.count == 1 ? "" : "s") · " + hosts.prefix(2).joined(separator: ", ")
-        }
-        return use.detail.isEmpty ? "" : use.kind == Connector.web.id ? "“\(use.detail)”" : use.detail
-    }
 }
 
 // MARK: - History
@@ -1135,6 +1161,10 @@ struct HistoryView: View {
                     }
                     Text(conversation.title).font(.geist(16)).foregroundStyle(Ink.primary).lineLimit(1)
                     Spacer(minLength: 12)
+                    // Still being answered, while you read another chat.
+                    if store.replying.contains(conversation.id) {
+                        SpiralLoader(size: 12, color: Ink.tertiary).transition(.opacity)
+                    }
                     Text(conversation.createdAt, format: Calendar.current.isDateInToday(conversation.createdAt) ? .dateTime.hour().minute() : .dateTime.month(.abbreviated).day())
                         .font(.geist(12).monospacedDigit()).foregroundStyle(Ink.tertiary)
                 }
@@ -1149,7 +1179,6 @@ struct HistoryView: View {
         .listRowBackground(conversation.id == store.selectedID ? Ink.fill : Ink.paper)
         .listRowSeparatorTint(Ink.hairline)
         .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
-        .disabled(store.isBusy)
         .swipeActions {
             Button("Delete", systemImage: "trash", role: .destructive) { withAnimation(.smooth) { store.delete(conversation) } }
                 .tint(.red) // the app-wide ink tint would otherwise turn it white on white

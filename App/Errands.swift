@@ -160,7 +160,9 @@ final class ErrandDesk {
 
     static let systemPrompt = """
     You are Loocal, running an errand for the user on their iPhone, fully offline. Do the whole task in one go \
-    without asking questions; if something is missing, make a sensible assumption and say so in one line. \
+    without asking questions; if a general detail is missing, make a sensible assumption and say so in one line. \
+    Never invent the user's own events, reminders, plans or facts: use only what's given below, and if it isn't there, \
+    say Loocal couldn't read it. \
     Reply with the finished result only: a short first line as a title, then the result, concise and easy to scan.
     """
 
@@ -385,7 +387,7 @@ struct ErrandView: View {
 
     private var page: some View {
         VStack(spacing: 0) {
-            ModelSelector(options: ModelChoice.all, disabled: store.isBusy, selection: $store.selectedModelID, dimmed: !store.download.isReady)
+            ModelSelector(options: ModelChoice.all, disabled: store.isWorking, selection: $store.selectedModelID, dimmed: !store.download.isReady)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 6).padding(.bottom, 8)
                 .dismissesKeyboardOnTap()
@@ -1300,7 +1302,7 @@ struct ErrandRunSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     ErrandHeader(run: run)
-                    ErrandBody(run: run, phase: store.phase)
+                    ErrandBody(run: run, phase: store.phases[run.id] ?? "")
                     if run.isActive {
                         Button { store.cancelErrand(run) } label: {
                             Label("Stop", systemImage: "stop.fill").font(.geist(13, .medium)).foregroundStyle(Ink.primary)
@@ -1394,7 +1396,7 @@ private struct RoutineCard: View {
                 Spacer(minLength: 8)
                 Menu {
                     Button("Run now", systemImage: "bolt") { store.runErrand(title: errand.title, instructions: errand.instructions, sources: errand.sources, errandID: errand.id) }
-                        .disabled(store.isBusy)
+                        .disabled(store.desk.active.count >= AppState.crewSize)
                     Button(errand.paused ? "Resume" : "Pause", systemImage: errand.paused ? "play" : "pause") { withAnimation(.smooth) { store.desk.togglePause(errand) } }
                     Button("Delete", systemImage: "trash", role: .destructive) { withAnimation(.smooth) { store.desk.delete(errand) } }
                 } label: {

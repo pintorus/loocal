@@ -147,6 +147,21 @@ struct BottomFade: View {
     }
 }
 
+/// Under the model selector: the chat fades into the paper as it scrolls up beneath it,
+/// the mirror of `BottomFade`.
+struct TopFade: View {
+    var body: some View {
+        LinearGradient(stops: [
+            .init(color: Ink.paper.opacity(0.97), location: 0),
+            .init(color: Ink.paper.opacity(0.75), location: 0.65),
+            .init(color: Ink.paper.opacity(0), location: 1),
+        ], startPoint: .top, endPoint: .bottom)
+        .padding(.bottom, -28)
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
+    }
+}
+
 /// Our pages draw their own back button and hide the navigation bar, which also switches
 /// off iOS's swipe-from-the-edge to go back. This turns it back on for every pushed page.
 extension UINavigationController: @retroactive UIGestureRecognizerDelegate {

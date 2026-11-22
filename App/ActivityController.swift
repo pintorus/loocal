@@ -10,6 +10,8 @@ final class ActivityController {
     var modelName = ModelChoice.standard.name
     private var state = InferenceAttributes.ContentState(phase: "", detail: "", generatedPieces: 0, isRunning: true)
     private var ticker: Task<Void, Never>?
+    /// The Live Activity is up (several jobs share one).
+    var isRunning: Bool { activity != nil }
 
     init() {
         let stale = Activity<InferenceAttributes>.activities
@@ -86,6 +88,8 @@ final class ContinuedInference {
     private var expire: (() -> Void)?
     /// A continued-processing task is running, so iOS keeps the app alive in the background.
     var hasGrant: Bool { task != nil }
+    /// Asked iOS and still waiting for its answer: jobs that join now start with the first.
+    var isPending: Bool { launch != nil }
     /// That task includes background GPU. Otherwise background work must run on the CPU.
     private(set) var grantedGPU = false
     var modelName = ModelChoice.standard.name
@@ -133,9 +137,9 @@ final class ContinuedInference {
         if gpu { request.requiredResources = .gpu }
         request.strategy = .fail
         let fallback = { [weak self] in
-            guard let self, self.runID == runID, self.task == nil, self.launch != nil else { return }
+            guard let self, self.runID == runID, self.task == nil, let launch = self.launch else { return }
             self.finish(success: false)
-            onLaunch()
+            launch() // every job that joined while iOS was deciding
         }
         // iOS sometimes neither grants nor refuses. Never leave the reply waiting on it:
         // start after a moment anyway; a late grant still keeps the app alive in the background.
@@ -159,6 +163,13 @@ final class ContinuedInference {
             do { try BGTaskScheduler.shared.submit(request) }
             catch { fallback() }
         }
+    }
+
+    /// Another job alongside the first: it shares the background task. It starts at once if
+    /// iOS has already answered, or together with the first job once it does.
+    func join(_ onLaunch: @escaping () -> Void) {
+        guard let pending = launch else { onLaunch(); return }
+        launch = { pending(); onLaunch() }
     }
 
     func update(phase: String, count: Int) {

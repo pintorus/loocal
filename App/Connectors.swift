@@ -16,7 +16,8 @@ struct Connector: Identifiable, Hashable {
     static let clipboard = Connector(id: "clipboard", name: "Clipboard", icon: "doc.on.clipboard", detail: "What you last copied")
     static let wikipedia = Connector(id: "wikipedia", name: "Wikipedia", icon: "globe", detail: "Looks your question up online")
     static let web = Connector(id: "web", name: "Web search", icon: "magnifyingglass", detail: "Lets the model search the web")
-    static let builtIn = [web, calendar, reminders, clipboard, wikipedia]
+    static let maps = Connector(id: "maps", name: "Maps", icon: "map", detail: "Searches Apple Maps around you")
+    static let builtIn = [web, maps, calendar, reminders, clipboard, wikipedia]
 
     /// The box shown in a reply when this source is read.
     var use: ToolUse {
@@ -51,9 +52,41 @@ enum ConnectorHub {
         }
     }
 
+    /// Whether Loocal may read this source now.
+    static func isAllowed(_ id: String) -> Bool {
+        switch id {
+        case Connector.calendar.id: EKEventStore.authorizationStatus(for: .event) == .fullAccess
+        case Connector.reminders.id: EKEventStore.authorizationStatus(for: .reminder) == .fullAccess
+        default: true
+        }
+    }
+
+    /// Sources a request asks for in so many words. Allowed ones come back to be read; for
+    /// any that aren't, a note tells the model so it says that rather than guessing.
+    /// `ask` shows the permission prompt for a source that was never asked about.
+    static func resolve(_ wanted: Set<String>, ask: Bool) async -> (allowed: Set<String>, note: String) {
+        var allowed: Set<String> = [], refused: [String] = []
+        for id in wanted.sorted() {
+            if isAllowed(id) { allowed.insert(id); continue }
+            if ask, needsAsking(id), await requestAccess(for: id), isAllowed(id) { allowed.insert(id); continue }
+            refused.append(Connector.builtIn.first { $0.id == id }?.name ?? id)
+        }
+        guard !refused.isEmpty else { return (allowed, "") }
+        let names = ListFormatter.localizedString(byJoining: refused)
+        return (allowed, "Loocal isn't allowed to read the user's \(names), so you can't see it. Say so plainly, and that they can allow it in the Settings app › Apps › Loocal. Never guess what's in it.")
+    }
+
+    private static func needsAsking(_ id: String) -> Bool {
+        switch id {
+        case Connector.calendar.id: EKEventStore.authorizationStatus(for: .event) == .notDetermined
+        case Connector.reminders.id: EKEventStore.authorizationStatus(for: .reminder) == .notDetermined
+        default: false
+        }
+    }
+
     static func context(for active: Set<String>, prompt: String) async -> String {
         var parts: [String] = []
-        if active.contains(Connector.calendar.id), let text = calendar() { parts.append(text) }
+        if active.contains(Connector.calendar.id), let text = calendar(SourceIntent.calendarWindow(for: prompt)) { parts.append(text) }
         if active.contains(Connector.reminders.id), let text = await reminders() { parts.append(text) }
         if active.contains(Connector.clipboard.id), let text = UIPasteboard.general.string, !text.isEmpty {
             parts.append("Clipboard:\n" + String(text.prefix(budget)))
@@ -63,16 +96,20 @@ enum ConnectorHub {
         return "Context from the user's connected sources (use it when relevant):\n\n" + parts.joined(separator: "\n\n")
     }
 
-    private static func calendar() -> String? {
-        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return nil }
-        let start = Date.now, end = Calendar.current.date(byAdding: .day, value: 7, to: start)!
-        let events = store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil)).prefix(14)
-        guard !events.isEmpty else { return "Calendar: nothing scheduled in the next 7 days." }
+    private static func calendar(_ window: SourceIntent.Window) -> String? {
+        guard isAllowed(Connector.calendar.id) else { return nil }
+        let long = window.end.timeIntervalSince(window.start) > 8 * 86_400
+        let all = store.events(matching: store.predicateForEvents(withStart: window.start, end: window.end, calendars: nil))
+        let events = all.prefix(long ? 40 : 14)
+        let span = "\(window.start.formatted(.dateTime.weekday().day().month())) – \(window.end.addingTimeInterval(-1).formatted(.dateTime.weekday().day().month()))"
+        guard !events.isEmpty else { return "Calendar (\(window.label), \(span)): nothing scheduled. Say the calendar is clear then." }
         let lines = events.map { event in
-            let when = event.isAllDay ? event.startDate.formatted(.dateTime.weekday().day().month()) + " (all day)" : event.startDate.formatted(.dateTime.weekday().day().month().hour().minute())
-            return "- \(when): \(event.title ?? "Untitled")" + (event.location.map { " @ \($0)" } ?? "")
+            let day = long ? event.startDate.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)) : event.startDate.formatted(.dateTime.weekday().day().month())
+            let when = event.isAllDay ? day + " (all day)" : day + " " + event.startDate.formatted(.dateTime.hour().minute())
+            return "- \(when): \(event.title ?? "Untitled")" + (long ? "" : event.location.map { " @ \($0)" } ?? "")
         }
-        return String(("Calendar (next 7 days):\n" + lines.joined(separator: "\n")).prefix(budget))
+        let more = all.count > events.count ? "\n(and \(all.count - events.count) more)" : ""
+        return String(("Calendar (\(window.label), \(span)), the user's real events, all of them:\n" + lines.joined(separator: "\n") + more).prefix(long ? budget * 2 : budget))
     }
 
     private static func reminders() async -> String? {
@@ -89,6 +126,73 @@ enum ConnectorHub {
         }
         guard !titles.isEmpty else { return "Reminders: none open." }
         return String(("Open reminders:\n" + titles.joined(separator: "\n")).prefix(budget))
+    }
+}
+
+/// Which of the user's own sources a request is about, from its words alone, so "check my
+/// calendar" or "what have I got next month" reads the calendar without a Calendar island.
+enum SourceIntent {
+    static let calendarWords = [
+        "calendar", "agenda", "schedule", "meeting", "appointment", "event", "going on", "am i free", "am i busy", "i'm free", "im free",
+        "what do i have", "what have i got", "what i have", "what's on", "whats on", "my plans", "plans for", "my day", "my week", "my weekend", "my month",
+        "calendrier", "rendez-vous", "rdv", "reunion", "evenement", "ce que j'ai", "qu'est-ce que j'ai", "j'ai quoi", "je suis libre", "suis-je libre",
+        "suis libre", "mon planning", "planning", "ma journee", "ma semaine", "mon week-end", "mon mois", "mes plans", "prevu",
+    ]
+    static let reminderWords = [
+        "reminders", "my reminder", "to-do", "todo", "to do list", "my tasks", "what's due", "whats due", "need to do",
+        "rappels", "mes rappels", "taches", "a faire", "dois faire",
+    ]
+    static let clipboardWords = ["clipboard", "i copied", "i've copied", "presse-papier", "j'ai copie"]
+
+    static func folded(_ text: String) -> String {
+        text.lowercased().folding(options: .diacriticInsensitive, locale: nil).replacingOccurrences(of: "’", with: "'")
+    }
+
+    static func wanted(_ text: String) -> Set<String> {
+        let text = folded(text)
+        var ids: Set<String> = []
+        if calendarWords.contains(where: text.contains) { ids.insert(Connector.calendar.id) }
+        if reminderWords.contains(where: text.contains) { ids.insert(Connector.reminders.id) }
+        if clipboardWords.contains(where: text.contains) { ids.insert(Connector.clipboard.id) }
+        return ids
+    }
+
+    struct Window: Equatable { let start: Date; let end: Date; let label: String }
+
+    /// The stretch of calendar the words are about; the next 7 days when they don't say.
+    static func calendarWindow(for text: String, now: Date = .now, calendar: Calendar = .current) -> Window {
+        let text = folded(text)
+        let has = { (words: [String]) in words.contains(where: text.contains) }
+        let today = calendar.startOfDay(for: now)
+        let day = { (offset: Int) in calendar.date(byAdding: .day, value: offset, to: today)! }
+        if let match = text.firstMatch(of: /(?:next|coming|prochains?)\s+(\d{1,2})\s+(?:days|jours)|(\d{1,2})\s+(?:prochains|next)\s+(?:jours|days)/),
+           let count = Int(match.output.1 ?? match.output.2 ?? "") {
+            let days = min(60, max(1, count))
+            return Window(start: now, end: day(days + 1), label: "next \(days) days")
+        }
+        if has(["next month", "mois prochain", "coming month"]) {
+            let next = calendar.dateInterval(of: .month, for: calendar.date(byAdding: .month, value: 1, to: now)!)!
+            return Window(start: next.start, end: next.end, label: "next month")
+        }
+        if has(["this month", "ce mois", "my month", "mon mois", "rest of the month"]) {
+            return Window(start: now, end: calendar.dateInterval(of: .month, for: now)!.end, label: "the rest of this month")
+        }
+        if has(["next week", "semaine prochaine"]) {
+            let next = calendar.dateInterval(of: .weekOfYear, for: calendar.date(byAdding: .weekOfYear, value: 1, to: now)!)!
+            return Window(start: next.start, end: next.end, label: "next week")
+        }
+        if has(["weekend", "week-end", "week end"]) {
+            let weekday = calendar.component(.weekday, from: now) // 1 Sunday … 7 Saturday
+            if weekday == 7 || weekday == 1 { return Window(start: now, end: day(weekday == 7 ? 2 : 1), label: "this weekend") }
+            return Window(start: day(7 - weekday), end: day(9 - weekday), label: "the weekend")
+        }
+        if has(["week ahead", "coming week", "7 days", "sept jours"]) { return Window(start: now, end: day(7), label: "next 7 days") }
+        if has(["this week", "cette semaine", "my week", "ma semaine", "rest of the week"]) {
+            return Window(start: now, end: calendar.dateInterval(of: .weekOfYear, for: now)!.end, label: "the rest of this week")
+        }
+        if has(["tomorrow", "demain"]) { return Window(start: day(1), end: day(2), label: "tomorrow") }
+        if has(["today", "tonight", "aujourd'hui", "ce soir", "my day", "ma journee"]) { return Window(start: now, end: day(1), label: "today") }
+        return Window(start: now, end: day(7), label: "next 7 days")
     }
 }
 

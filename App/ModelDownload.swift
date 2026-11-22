@@ -260,10 +260,17 @@ final class ModelDownload {
     /// subfolders. The 8B lives at the root of the models folder, where the other models and
     /// the Kokoro voice engine have their own subfolders, so loading straight from there mixed
     /// their weights in ("Unhandled keys … bert"). Links cost nothing and move no data.
+    ///
+    /// Several replies can start at once, and one may be loading the model from this folder
+    /// while another asks for it: an intact folder is reused, never pulled out from under it.
     func loadingDirectory() throws -> URL {
         let fileManager = FileManager.default
         let staging = directory.deletingLastPathComponent()
             .appendingPathComponent(directory.lastPathComponent == "Model" ? ".load-root" : ".load-" + directory.lastPathComponent, isDirectory: true)
+        let intact = spec.files.allSatisfy { file in
+            (try? fileManager.destinationOfSymbolicLink(atPath: staging.appendingPathComponent(file.name).path)) == directory.appendingPathComponent(file.name).path
+        }
+        if intact, let names = try? fileManager.contentsOfDirectory(atPath: staging.path), names.count == spec.files.count { return staging }
         try? fileManager.removeItem(at: staging)
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
         for file in spec.files {

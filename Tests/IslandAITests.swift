@@ -164,4 +164,107 @@ final class IslandAITests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: staging.appendingPathComponent("model.safetensors"), encoding: .utf8), "own")
         XCTAssertFalse(staging.path.hasPrefix(root.path + "/"), "The load folder must sit outside the model folder")
     }
+
+    func testIslandsReadByNameForTheModelAndVanishForTools() {
+        let maps = Island.connector(.maps), file = Island(kind: .file, ref: "f", title: "notes.md", icon: "doc", tint: .amber)
+        let text = "Find a café \(maps.marker) near the place in \(file.marker)"
+        XCTAssertEqual(IslandText.spoken(text, [maps, file]), "Find a café [Maps] near the place in [the attached file “notes.md”]")
+        XCTAssertEqual(IslandText.titled(text, [maps, file]), "Find a café Maps near the place in notes.md")
+        XCTAssertEqual(IslandText.stripped(text), "Find a café near the place in")
+        XCTAssertEqual(IslandText.present(in: "Find \(maps.marker)", [maps, file]).map(\.id), [maps.id])
+    }
+
+    func testIslandsSurviveTheArchiveAndUnknownMarkersDrop() throws {
+        let maps = Island.connector(.maps)
+        var message = ChatMessage(role: .user, text: "Coffee \(maps.marker) ⟦gone⟧")
+        message.islands = [maps]
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(decoded.islands, [maps])
+        XCTAssertEqual(decoded.readable, "Coffee Maps ")
+        var use = ToolUse(kind: "calc", icon: "function", running: "", done: "")
+        use.widget = .map(title: "café", pins: [.init(name: "Lomi", detail: "650 m", latitude: 48.9, longitude: 2.35)], here: nil)
+        XCTAssertEqual(try JSONDecoder().decode(ToolUse.self, from: JSONEncoder().encode(use)).widget, use.widget)
+    }
+
+    func testMemoryPlanSizesTheKVCacheFromTheModelConfig() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let qwen = #"{"model_type":"qwen3_vl","text_config":{"num_hidden_layers":36,"num_attention_heads":32,"num_key_value_heads":8,"head_dim":128}}"#
+        try Data(qwen.utf8).write(to: root.appendingPathComponent("config.json"))
+        try Data(count: 4096).write(to: root.appendingPathComponent("model.safetensors"))
+        let plan = try MemoryPlan(model: .standard, directory: root)
+        XCTAssertEqual(plan.weightBytes, 4096)
+        XCTAssertEqual(plan.kvPerToken, 36 * 8 * 128 * 4)
+        XCTAssertEqual(plan.fixedKV, 0)
+        // A finished reply has nothing left to claim; a fresh one claims its whole length.
+        XCTAssertEqual(plan.remaining(generated: ModelSpec.maxOutputTokens), 0)
+        XCTAssertGreaterThan(plan.need(prompt: 2048, photo: false), plan.need(prompt: 256, photo: false))
+        // Short contexts stay bf16; a long one switches to 8 bits, about half the bytes.
+        XCTAssertEqual(plan.cache(512), plan.kvPerToken * 512)
+        XCTAssertLessThan(Double(plan.cache(2816)), Double(plan.kvPerToken * 2816) * 0.55)
+        XCTAssertEqual(plan.remaining(generated: 0), plan.kvPerToken * ModelSpec.maxOutputTokens)
+    }
+
+    func testMemoryPlanBoundsGemmaSlidingLayers() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let gemma = #"{"model_type":"gemma3_text","num_hidden_layers":48,"num_attention_heads":16,"num_key_value_heads":8,"head_dim":256,"sliding_window":1024,"sliding_window_pattern":6}"#
+        try Data(gemma.utf8).write(to: root.appendingPathComponent("config.json"))
+        let plan = try MemoryPlan(model: .large, directory: root)
+        XCTAssertEqual(plan.kvPerToken, 8 * 8 * 256 * 4) // only the 8 global layers grow
+        XCTAssertEqual(plan.fixedKV, 40 * 8 * 256 * 4 * 1024)
+    }
+
+    func testFirstMessageDatesTheChat() {
+        let made = Date(timeIntervalSince1970: 1_000)
+        var chat = Conversation(createdAt: made)
+        let first = Date(timeIntervalSince1970: 50_000)
+        chat.append(.init(role: .user, text: "hello"), at: first)
+        XCTAssertEqual(chat.createdAt, first, "A blank chat reused hours later is dated by its first message")
+        chat.append(.init(role: .assistant, text: "hi"), at: Date(timeIntervalSince1970: 90_000))
+        XCTAssertEqual(chat.createdAt, first, "Later messages don't move it")
+    }
+
+    func testEchoOfLoocalsOwnWordsNeverCutsItOff() {
+        let echo = Set(TurnTaking.words("The strata bakes for about forty minutes."))
+        XCTAssertFalse(TurnTaking.isInterruption("about forty minutes", echo: echo, talkingFor: 1.5))
+        XCTAssertEqual(TurnTaking.strippingEcho("forty minutes wait what temperature", echo: echo), "wait what temperature")
+    }
+
+    func testBackchannelsKeepLoocalTalkingButRealWordsCutIn() {
+        let echo: Set<String> = ["leeks", "butter"]
+        XCTAssertFalse(TurnTaking.isInterruption("yeah mm-hmm", echo: echo, talkingFor: 0.4))
+        XCTAssertFalse(TurnTaking.isInterruption("Ouais", echo: echo, talkingFor: 0.3))
+        XCTAssertTrue(TurnTaking.isInterruption("Wait,", echo: echo, talkingFor: 0.2), "One stop word is enough")
+        XCTAssertTrue(TurnTaking.isInterruption("Attends !", echo: echo, talkingFor: 0.2))
+        XCTAssertTrue(TurnTaking.isInterruption("what about cheese", echo: echo, talkingFor: 0.3))
+        XCTAssertFalse(TurnTaking.isInterruption("cheese", echo: echo, talkingFor: 0.2), "A lone word needs a sustained voice")
+        XCTAssertTrue(TurnTaking.isInterruption("cheese", echo: echo, talkingFor: 0.8))
+    }
+
+    func testPlainWordsAskForTheCalendarWithoutAnIsland() {
+        XCTAssertTrue(SourceIntent.wanted("Check my calendar").contains(Connector.calendar.id))
+        XCTAssertTrue(SourceIntent.wanted("What I have going on next month").contains(Connector.calendar.id))
+        XCTAssertTrue(SourceIntent.wanted("Qu’est-ce que j’ai demain ?").contains(Connector.calendar.id))
+        XCTAssertTrue(SourceIntent.wanted("Show my reminders").contains(Connector.reminders.id))
+        XCTAssertTrue(SourceIntent.wanted("How tall is the Eiffel Tower?").isEmpty)
+    }
+
+    func testCalendarWindowFollowsTheWords() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        calendar.firstWeekday = 2
+        let day = { (y: Int, m: Int, d: Int) in calendar.date(from: DateComponents(year: y, month: m, day: d))! }
+        let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 10))! // a Sunday
+        let month = SourceIntent.calendarWindow(for: "What I have going on next month", now: now, calendar: calendar)
+        XCTAssertEqual([month.start, month.end], [day(2026, 12, 1), day(2027, 1, 1)])
+        let tomorrow = SourceIntent.calendarWindow(for: "anything tomorrow?", now: now, calendar: calendar)
+        XCTAssertEqual([tomorrow.start, tomorrow.end], [day(2026, 11, 23), day(2026, 11, 24)])
+        let week = SourceIntent.calendarWindow(for: "plan next week", now: now, calendar: calendar)
+        XCTAssertEqual([week.start, week.end], [day(2026, 11, 23), day(2026, 11, 30)])
+        XCTAssertEqual(SourceIntent.calendarWindow(for: "my next 10 days", now: now, calendar: calendar).end, day(2026, 12, 3))
+        XCTAssertEqual(SourceIntent.calendarWindow(for: "Check my calendar", now: now, calendar: calendar).end, day(2026, 11, 29))
+    }
 }

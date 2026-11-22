@@ -65,7 +65,14 @@ enum IslandError: LocalizedError {
 enum MemoryHeadroom {
     /// Stop generating below this, rather than let iOS terminate the app mid-reply.
     static let floor = 180 * 1024 * 1024
-    static var bytes: Int { os_proc_available_memory() }
+    static var bytes: Int {
+        let available = os_proc_available_memory()
+        most.withLock { $0 = max($0, available) }
+        return available
+    }
+    /// The most this app has had free since launch: about all iOS will ever let it use.
+    static var ceiling: Int { most.withLock { max($0, os_proc_available_memory()) } }
+    private static let most = OSAllocatedUnfairLock(initialState: 0)
     static var megabytes: Int { bytes / (1024 * 1024) }
 }
 
@@ -83,6 +90,10 @@ struct ChatMessage: Identifiable, Codable, Sendable, Equatable {
     var context: String? = nil
     /// What the reply used on the way: sources read and tools called, shown as boxes.
     var tools: [ToolUse]? = nil
+    /// Tools, connectors and attachments placed in the prompt's text as `⟦id⟧` markers.
+    var islands: [Island]? = nil
+    /// The prompt as a person reads it, islands by name.
+    var readable: String { IslandText.titled(text, islands ?? []) }
 }
 
 /// One tool step in a reply, as the chat shows it.
@@ -106,6 +117,8 @@ struct ToolUse: Identifiable, Codable, Sendable, Equatable {
     var links: [Link] = []
     /// Something it did (not just read), which can be undone.
     var action: ToolAction? = nil
+    /// What the tool found, drawn in the reply: a map, a result, a translation.
+    var widget: ToolWidget? = nil
     var title: String {
         switch status {
         case .running: running
@@ -114,6 +127,21 @@ struct ToolUse: Identifiable, Codable, Sendable, Equatable {
         case .failed: action == nil ? "Couldn’t reach " + done.lowercased() : "Couldn’t do it"
         }
     }
+}
+
+/// A small piece of interface a tool puts into the reply text.
+enum ToolWidget: Codable, Sendable, Equatable {
+    struct Pin: Codable, Sendable, Equatable, Hashable {
+        var name: String
+        var detail: String
+        var latitude: Double
+        var longitude: Double
+        var url: URL?
+    }
+    /// Places found around you (or a trip's destination), and where you are.
+    case map(title: String, pins: [Pin], here: Pin?)
+    case calculation(expression: String, result: String)
+    case translation(language: String, text: String)
 }
 
 struct Conversation: Identifiable, Codable, Sendable {
@@ -126,7 +154,14 @@ struct Conversation: Identifiable, Codable, Sendable {
     /// Pinned chats sit at the top of History.
     var pinned: Bool? = nil
     var isPinned: Bool { pinned == true }
-    var title: String { messages.first(where: { $0.role == .user }).map { String($0.text.prefix(52)) } ?? "New conversation" }
+    var title: String { messages.first(where: { $0.role == .user }).map { String($0.readable.prefix(52)) } ?? "New conversation" }
+
+    /// Adds a message. The first one dates the chat: a blank chat can sit unused for hours
+    /// (New Chat reuses it), and History should show when you actually started it.
+    mutating func append(_ message: ChatMessage, at date: Date = .now) {
+        if messages.isEmpty { createdAt = date }
+        messages.append(message)
+    }
 
     mutating func recoverInterruptedReply() {
         for index in messages.indices where messages[index].status == .generating {

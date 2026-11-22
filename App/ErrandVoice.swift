@@ -185,11 +185,9 @@ struct ErrandVoiceView: View {
     static func sources(for said: String) -> [String] {
         let text = said.lowercased()
         var ids: [String] = []
-        let calendar = ["calendar", "meeting", "agenda", "schedule", "today", "tomorrow", "week", "agenda", "rendez-vous", "réunion", "semaine", "demain"]
-        let reminders = ["remind", "reminder", "to-do", "todo", "to do", "task", "rappel", "tâche"]
-        if calendar.contains(where: text.contains), EKEventStore.authorizationStatus(for: .event) == .fullAccess { ids.append(Connector.calendar.id) }
-        if reminders.contains(where: text.contains), EKEventStore.authorizationStatus(for: .reminder) == .fullAccess { ids.append(Connector.reminders.id) }
-        if ["clipboard", "copied", "presse-papier", "copié"].contains(where: text.contains) { ids.append(Connector.clipboard.id) }
+        let wanted = SourceIntent.wanted(said)
+        for id in [Connector.calendar.id, Connector.reminders.id] where wanted.contains(id) && ConnectorHub.isAllowed(id) { ids.append(id) }
+        if wanted.contains(Connector.clipboard.id) || ["copied", "copié"].contains(where: text.contains) { ids.append(Connector.clipboard.id) }
         if WebSearch.wantsSearch(said) || ["find", "web", "online", "trouve"].contains(where: text.contains) { ids.append(Connector.web.id) }
         return ids
     }

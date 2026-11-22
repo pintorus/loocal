@@ -12,10 +12,12 @@
 		0C8E79533853BFC13D0F5FD6 /* PebbleShape.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2A93A19005CB149465B4F81 /* PebbleShape.swift */; };
 		136F488D86D3CB4F17F1A640 /* VoiceConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46EC5DF3243789A2A8508E26 /* VoiceConversation.swift */; };
 		1455DE0A0573F263DBCA3B83 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 2EFC775D79FAA810A07FC584 /* MLXLLM */; };
+		146C3E5C757B217457692BAF /* Duplex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C95C03FC296086FAED5CBF1 /* Duplex.swift */; };
 		1FC1E3C87C397890E14C2BC1 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89540703F336453E33FF870C /* AppState.swift */; };
 		20060FECEB55466ADEBBE95B /* Connectors.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9CABB2F5182F205DD3CEEA2 /* Connectors.swift */; };
 		21CF67291DCA04EBACAAB024 /* IslandActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 543CF81F3DD5D3E7A0DBAED5 /* IslandActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		30A94069FC37428167BF5A54 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28C71349CFF13171A2E55320 /* Theme.swift */; };
+		419FFCC80A299C454F63943B /* ToolTrail.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00D2BAB9C2DD2CCDB41D004 /* ToolTrail.swift */; };
 		4EE5CB7A137FD195F29564F3 /* SpiralLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229E58158AD92116CD41ADB1 /* SpiralLoader.swift */; };
 		50F1045A293DE9B896E98301 /* Shortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD14ACE55E6145BA4B6257E /* Shortcuts.swift */; };
 		525EFFF3F7D0CD7DE0821105 /* Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBD10BD5F41D3E6D907AC504 /* Actions.swift */; };
@@ -27,15 +29,17 @@
 		6FA2E9E136A7280F42103590 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 56AF7C53B4769D02685C4B69 /* MLXLMCommon */; };
 		758B476B9673E2C8AD003884 /* ModelManifest.json in Resources */ = {isa = PBXBuildFile; fileRef = A4C3A03A6BBE52F36FB8CA06 /* ModelManifest.json */; };
 		875469A8D7731A5C4803F0B1 /* IslandAIUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 975B181A255C6DE3779F5B9D /* IslandAIUITests.swift */; };
+		8EE51A3EFAF488A0EBB538AD /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = EC91100881F7FCCFF46F5B75 /* KokoroSwift */; };
 		8F6F934AF1D122A4D069CCF3 /* InferenceAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90E1603CA772C8CA5A2000E7 /* InferenceAttributes.swift */; };
 		952EB7183D0B7555EEE6F79E /* Errands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 653CD09EBA0E45B6698638FA /* Errands.swift */; };
 		97DBB7910B3CF8CD7CC2CBE5 /* IslandApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8276B61D49085B45D50D16D5 /* IslandApp.swift */; };
 		9925B5EB86416C0BC6024D08 /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A879FE06EA59ED8F7145E251 /* ConversationView.swift */; };
 		99A6E4E39C143EB2B4D34E1E /* InstrumentSerif-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 2B64C6E678E0C889ABF1094F /* InstrumentSerif-Regular.ttf */; };
+		A0372D2F8BC53C9A6C33D6F5 /* Islands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F2F36B16ED4D4E0EF6929A8 /* Islands.swift */; };
 		AC64771E0C75CED968F124D1 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = 58EC7F8B908C0C25A7066F5F /* MLXVLM */; };
 		B00B3B8E7D761CF0799EE6E8 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75DA7D97720043E121C40794 /* RootView.swift */; };
 		B409BEA3E9631E70541F079C /* ModelCompatibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0499323687BFB77CDBEB840A /* ModelCompatibility.swift */; };
-		B4689893A5B1B5716C07FDBF /* KokoroSwift in Frameworks */ = {isa = PBXBuildFile; productRef = EC91100881F7FCCFF46F5B75 /* KokoroSwift */; };
+		B4689893A5B1B5716C07FDBF /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = D31998FB6AD68E158E288CA9 /* MLXNN */; };
 		B8548426EEDD231A58DCF07E /* OFL-InstrumentSerif.txt in Resources */ = {isa = PBXBuildFile; fileRef = A0044CE97D05884D5953658E /* OFL-InstrumentSerif.txt */; };
 		B9A48668D9B725D8E6FB4EE8 /* VoiceSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2657AF9A3420CB45CCC8202E /* VoiceSettings.swift */; };
 		BB914262298BE61C61804B9D /* InferenceAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90E1603CA772C8CA5A2000E7 /* InferenceAttributes.swift */; };
@@ -47,6 +51,7 @@
 		C78FE146FF652F481EB922A1 /* IslandAITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 888CDB21A5E79F1F9B046FCA /* IslandAITests.swift */; };
 		C8CF5D110DCB12DBB35BDBC9 /* ModelManifest-4B.json in Resources */ = {isa = PBXBuildFile; fileRef = 1B67A0D08F8312011FBB2DCF /* ModelManifest-4B.json */; };
 		CD507D0B4709AB33F0F7FA3F /* ErrandVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = B510754321D34D88A6C0745B /* ErrandVoice.swift */; };
+		D48E718907D1ADAB97289036 /* IslandArt.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2ED77E356BE61C9CB65F7D6 /* IslandArt.swift */; };
 		D5ACC3FD00D298D1355ACAA5 /* Persona.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EE112B746F79F170DD202A0 /* Persona.swift */; };
 		DD49C1EF17756C7E87EE657E /* Geist-Variable.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 4FDAB0921FB9963792B384E3 /* Geist-Variable.ttf */; };
 		DEEFD896F00008699064FA46 /* InstrumentSerif-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A584D86BF61A02E2AA988694 /* InstrumentSerif-Italic.ttf */; };
@@ -59,6 +64,7 @@
 		EDD28EF4C59ABA18764ED95E /* LoopGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26A9EEF6FCAADF270EC96FA3 /* LoopGeometry.swift */; };
 		F0A8CD412AA5CBD4004A455E /* NeuralVoices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 713E40B871A9DBB80A1568C9 /* NeuralVoices.swift */; };
 		F234EE4F8032415A54FB5D7E /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = FA117BFC99B2E3BDF985F912 /* MLX */; };
+		F4251C90B9BF7252ADB8A821 /* IslandField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C61B5681A805AD496C0BD0C /* IslandField.swift */; };
 		FA44867967FC588386898FFB /* SendControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC607114706BCC39FA6FEE51 /* SendControl.swift */; };
 		FCC9F5839986057BE79A3AB5 /* IslandActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 622E1453DDB5C2933C04F898 /* IslandActivity.swift */; };
 /* End PBXBuildFile section */
@@ -108,6 +114,7 @@
 		1B67A0D08F8312011FBB2DCF /* ModelManifest-4B.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "ModelManifest-4B.json"; sourceTree = "<group>"; };
 		1C682F60E47498036B1A13FC /* OFL-Geist.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-Geist.txt"; sourceTree = "<group>"; };
 		1ECEF0BEEC272B8C21C77102 /* Pebble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pebble.swift; sourceTree = "<group>"; };
+		1F2F36B16ED4D4E0EF6929A8 /* Islands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Islands.swift; sourceTree = "<group>"; };
 		229E58158AD92116CD41ADB1 /* SpiralLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpiralLoader.swift; sourceTree = "<group>"; };
 		2657AF9A3420CB45CCC8202E /* VoiceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceSettings.swift; sourceTree = "<group>"; };
 		26A9EEF6FCAADF270EC96FA3 /* LoopGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoopGeometry.swift; sourceTree = "<group>"; };
@@ -125,9 +132,11 @@
 		600331AAF9BCE3400C4A2C87 /* AttachMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachMenu.swift; sourceTree = "<group>"; };
 		622E1453DDB5C2933C04F898 /* IslandActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslandActivity.swift; sourceTree = "<group>"; };
 		653CD09EBA0E45B6698638FA /* Errands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Errands.swift; sourceTree = "<group>"; };
+		6C95C03FC296086FAED5CBF1 /* Duplex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Duplex.swift; sourceTree = "<group>"; };
 		713E40B871A9DBB80A1568C9 /* NeuralVoices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeuralVoices.swift; sourceTree = "<group>"; };
 		75DA7D97720043E121C40794 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		78B4F4D0D4352D22486C7B11 /* Tools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tools.swift; sourceTree = "<group>"; };
+		7C61B5681A805AD496C0BD0C /* IslandField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslandField.swift; sourceTree = "<group>"; };
 		7D39C08CE2E7A866A9842C14 /* AudioLines.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLines.swift; sourceTree = "<group>"; };
 		8276B61D49085B45D50D16D5 /* IslandApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslandApp.swift; sourceTree = "<group>"; };
 		836B53F972A12FC25F957205 /* Speech.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Speech.swift; sourceTree = "<group>"; };
@@ -138,7 +147,9 @@
 		975B181A255C6DE3779F5B9D /* IslandAIUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslandAIUITests.swift; sourceTree = "<group>"; };
 		98188F04F715A4D855A9C698 /* InferenceEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceEngine.swift; sourceTree = "<group>"; };
 		A0044CE97D05884D5953658E /* OFL-InstrumentSerif.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "OFL-InstrumentSerif.txt"; sourceTree = "<group>"; };
+		A00D2BAB9C2DD2CCDB41D004 /* ToolTrail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolTrail.swift; sourceTree = "<group>"; };
 		A2A93A19005CB149465B4F81 /* PebbleShape.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PebbleShape.swift; sourceTree = "<group>"; };
+		A2ED77E356BE61C9CB65F7D6 /* IslandArt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslandArt.swift; sourceTree = "<group>"; };
 		A4C3A03A6BBE52F36FB8CA06 /* ModelManifest.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ModelManifest.json; sourceTree = "<group>"; };
 		A584D86BF61A02E2AA988694 /* InstrumentSerif-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "InstrumentSerif-Italic.ttf"; sourceTree = "<group>"; };
 		A879FE06EA59ED8F7145E251 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
@@ -166,7 +177,8 @@
 				6FA2E9E136A7280F42103590 /* MLXLMCommon in Frameworks */,
 				1455DE0A0573F263DBCA3B83 /* MLXLLM in Frameworks */,
 				F234EE4F8032415A54FB5D7E /* MLX in Frameworks */,
-				B4689893A5B1B5716C07FDBF /* KokoroSwift in Frameworks */,
+				B4689893A5B1B5716C07FDBF /* MLXNN in Frameworks */,
+				8EE51A3EFAF488A0EBB538AD /* KokoroSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -185,6 +197,7 @@
 				E9CABB2F5182F205DD3CEEA2 /* Connectors.swift */,
 				038CD122BC9D0155BEA30854 /* ConversationMock.swift */,
 				A879FE06EA59ED8F7145E251 /* ConversationView.swift */,
+				6C95C03FC296086FAED5CBF1 /* Duplex.swift */,
 				653CD09EBA0E45B6698638FA /* Errands.swift */,
 				B510754321D34D88A6C0745B /* ErrandVoice.swift */,
 				87AFFA346D470E5B565BB57B /* Handwriting.swift */,
@@ -192,6 +205,9 @@
 				2918A7036AEB2BE8A68F1259 /* Info.plist */,
 				D4C618DFD3763EE7405E3D03 /* IslandAI.entitlements */,
 				8276B61D49085B45D50D16D5 /* IslandApp.swift */,
+				A2ED77E356BE61C9CB65F7D6 /* IslandArt.swift */,
+				7C61B5681A805AD496C0BD0C /* IslandField.swift */,
+				1F2F36B16ED4D4E0EF6929A8 /* Islands.swift */,
 				0499323687BFB77CDBEB840A /* ModelCompatibility.swift */,
 				D4BA4312590D86DAD8D87991 /* ModelDownload.swift */,
 				1B67A0D08F8312011FBB2DCF /* ModelManifest-4B.json */,
@@ -210,6 +226,7 @@
 				229E58158AD92116CD41ADB1 /* SpiralLoader.swift */,
 				28C71349CFF13171A2E55320 /* Theme.swift */,
 				78B4F4D0D4352D22486C7B11 /* Tools.swift */,
+				A00D2BAB9C2DD2CCDB41D004 /* ToolTrail.swift */,
 				46EC5DF3243789A2A8508E26 /* VoiceConversation.swift */,
 				2657AF9A3420CB45CCC8202E /* VoiceSettings.swift */,
 				7B69D82C5EADF2D318E976FE /* Fonts */,
@@ -337,6 +354,7 @@
 				56AF7C53B4769D02685C4B69 /* MLXLMCommon */,
 				2EFC775D79FAA810A07FC584 /* MLXLLM */,
 				FA117BFC99B2E3BDF985F912 /* MLX */,
+				D31998FB6AD68E158E288CA9 /* MLXNN */,
 				EC91100881F7FCCFF46F5B75 /* KokoroSwift */,
 			);
 			productName = IslandAI;
@@ -473,12 +491,16 @@
 				20060FECEB55466ADEBBE95B /* Connectors.swift in Sources */,
 				BDFB450B7C3609F5B2C2CFAC /* ConversationMock.swift in Sources */,
 				9925B5EB86416C0BC6024D08 /* ConversationView.swift in Sources */,
+				146C3E5C757B217457692BAF /* Duplex.swift in Sources */,
 				CD507D0B4709AB33F0F7FA3F /* ErrandVoice.swift in Sources */,
 				952EB7183D0B7555EEE6F79E /* Errands.swift in Sources */,
 				E111E174E3575366B91AC573 /* Handwriting.swift in Sources */,
 				8F6F934AF1D122A4D069CCF3 /* InferenceAttributes.swift in Sources */,
 				C6835E22DC2A078BEA210B81 /* InferenceEngine.swift in Sources */,
 				97DBB7910B3CF8CD7CC2CBE5 /* IslandApp.swift in Sources */,
+				D48E718907D1ADAB97289036 /* IslandArt.swift in Sources */,
+				F4251C90B9BF7252ADB8A821 /* IslandField.swift in Sources */,
+				A0372D2F8BC53C9A6C33D6F5 /* Islands.swift in Sources */,
 				EDD28EF4C59ABA18764ED95E /* LoopGeometry.swift in Sources */,
 				B409BEA3E9631E70541F079C /* ModelCompatibility.swift in Sources */,
 				6E96F0D63CF4EAE681DEEE55 /* ModelDownload.swift in Sources */,
@@ -495,6 +517,7 @@
 				EAECCCE973B4021F9965812E /* Speech.swift in Sources */,
 				4EE5CB7A137FD195F29564F3 /* SpiralLoader.swift in Sources */,
 				30A94069FC37428167BF5A54 /* Theme.swift in Sources */,
+				419FFCC80A299C454F63943B /* ToolTrail.swift in Sources */,
 				E3CF42700E953FABA1720F4D /* Tools.swift in Sources */,
 				136F488D86D3CB4F17F1A640 /* VoiceConversation.swift in Sources */,
 				B9A48668D9B725D8E6FB4EE8 /* VoiceSettings.swift in Sources */,
@@ -903,6 +926,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 01C0E58986AD47A637864C9E /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
 			productName = MLXVLM;
+		};
+		D31998FB6AD68E158E288CA9 /* MLXNN */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 475ECF362C24103877C41BFB /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXNN;
 		};
 		EC91100881F7FCCFF46F5B75 /* KokoroSwift */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -48,6 +48,8 @@ targets:
       product: MLXLLM
     - package: MLXSwift
       product: MLX
+    - package: MLXSwift
+      product: MLXNN
     - package: KokoroSwift
       product: KokoroSwift
     - target: IslandActivity

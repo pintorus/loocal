@@ -11,10 +11,14 @@ import Translation
 @MainActor
 enum ToolBelt {
     /// Runs every tool the message calls for. `show` adds or updates a box in the reply.
-    static func run(for message: String, show: (ToolUse) -> Void) async -> String {
+    /// `force` holds tools placed in the prompt as islands (Maps), which run even when the
+    /// words alone wouldn't call for them.
+    static func run(for message: String, force: Set<String> = [], show: (ToolUse) -> Void) async -> String {
         var notes: [String] = []
         if let calc = Calculator.answer(message) {
-            show(ToolUse(kind: "calc", icon: "function", running: "Calculating", done: "Calculated", detail: calc.shown, status: .done))
+            let sides = calc.shown.components(separatedBy: " = ")
+            let widget = sides.count == 2 ? ToolWidget.calculation(expression: sides[0], result: sides[1]) : .calculation(expression: "", result: calc.shown)
+            show(ToolUse(kind: "calc", icon: "function", running: "Calculating", done: "Calculated", detail: calc.shown, status: .done, widget: widget))
             notes.append("Exact result from the calculator (use it as is, don't redo the maths): \(calc.fact)")
         }
         if let request = Translator.detect(message) {
@@ -24,6 +28,7 @@ enum ToolBelt {
             case .success(let text):
                 box.status = .done
                 box.detail = "\(request.targetName) · \(text)"
+                box.widget = .translation(language: request.targetName, text: text)
                 notes.append("On-device translation (Apple Translation) into \(request.targetName): “\(text)”. Give exactly this translation as the answer, then nothing else unless useful.")
             case .failure(let error):
                 box.status = .failed
@@ -32,7 +37,7 @@ enum ToolBelt {
             }
             show(box)
         }
-        if let place = Places.detect(message) {
+        if let place = Places.detect(message) ?? (force.contains(Connector.maps.id) ? Places.forced(message) : nil) {
             var box = ToolUse(kind: "places", icon: place.isRoute ? "car" : "mappin.and.ellipse", running: place.isRoute ? "Working out the trip" : "Looking around you", done: place.isRoute ? "Checked Apple Maps" : "Searched Apple Maps", detail: place.query)
             show(box)
             switch await Places.run(place) {
@@ -40,6 +45,7 @@ enum ToolBelt {
                 box.status = .done
                 box.links = found.links
                 if !found.summary.isEmpty { box.detail = found.summary }
+                if !found.pins.isEmpty { box.widget = .map(title: place.query, pins: found.pins, here: found.here) }
                 notes.append(found.fact)
             case .failure(let error):
                 box.status = .failed
@@ -228,7 +234,11 @@ enum Calculator {
 
 enum Places {
     struct Request { var query: String; var isRoute: Bool }
-    struct Found { var summary: String; var fact: String; var links: [ToolUse.Link] }
+    struct Found {
+        var summary: String; var fact: String; var links: [ToolUse.Link]
+        var pins: [ToolWidget.Pin] = []
+        var here: ToolWidget.Pin? = nil
+    }
 
     private static let nearby = ["near me", "nearby", "near here", "around me", "around here", "close by", "closest", "nearest", "near", "around", "local", "à proximité", "près de moi", "près d'ici", "autour de moi", "à côté", "le plus proche", "la plus proche", "les plus proches", "dans le coin", "dans le quartier", "proche", "près"]
 
@@ -250,6 +260,13 @@ enum Places {
         let kind = kinds.first { kind in kind.contains(" ") ? lower.contains(kind) : words.contains(kind) || words.contains(kind + "s") || words.contains(kind + "es") }
         let asking = asks.contains { lower.contains($0) }
         guard (hasNear && (kind != nil || asking)) || (kind != nil && asking) else { return nil }
+        return Request(query: query(from: lower, kind: kind), isRoute: false)
+    }
+
+    /// A Maps island in the prompt: search for whatever the words ask, even without "near me".
+    static func forced(_ message: String) -> Request {
+        let lower = message.lowercased()
+        let kind = kinds.first { lower.contains($0) }
         return Request(query: query(from: lower, kind: kind), isRoute: false)
     }
 
@@ -281,7 +298,11 @@ enum Places {
                 return ("\(name), \(meters(distance)) away\(address.isEmpty ? "" : ", " + address)", link(name, item.location.coordinate, "\(name) · \(meters(distance))"))
             }
             let fact = "Places matching “\(request.query)” near the user, nearest first (from Apple Maps):\n" + rows.enumerated().map { "\($0.offset + 1). \($0.element.0)" }.joined(separator: "\n") + "\nAnswer from these; don't invent others."
-            return .success(Found(summary: "\(items.count) places · nearest \(meters(items[0].location.distance(from: here)))", fact: fact, links: rows.compactMap(\.1)))
+            let pins = items.map { item in
+                ToolWidget.Pin(name: item.name ?? "Place", detail: meters(item.location.distance(from: here)), latitude: item.location.coordinate.latitude, longitude: item.location.coordinate.longitude,
+                               url: link(item.name ?? "Place", item.location.coordinate, "")?.url)
+            }
+            return .success(Found(summary: "\(items.count) places · nearest \(meters(items[0].location.distance(from: here)))", fact: fact, links: rows.compactMap(\.1), pins: pins, here: pin(here)))
         } catch {
             return .failure(error)
         }
@@ -307,7 +328,13 @@ enum Places {
         let name = place.name ?? destination
         let straight = meters(place.location.distance(from: here))
         let fact = "Trip from the user's location to \(name) (Apple Maps): " + (lines.isEmpty ? "about \(straight) as the crow flies; no route times available." : lines.joined(separator: "; ") + ".")
-        return Found(summary: lines.first.map { "\(name) · \($0)" } ?? "\(name) · \(straight)", fact: fact, links: [link(name, place.location.coordinate, "\(name) in Maps")].compactMap { $0 })
+        let destination = ToolWidget.Pin(name: name, detail: lines.first ?? straight, latitude: place.location.coordinate.latitude, longitude: place.location.coordinate.longitude, url: link(name, place.location.coordinate, "")?.url)
+        return Found(summary: lines.first.map { "\(name) · \($0)" } ?? "\(name) · \(straight)", fact: fact, links: [link(name, place.location.coordinate, "\(name) in Maps")].compactMap { $0 },
+                     pins: [destination], here: pin(here))
+    }
+
+    private static func pin(_ here: CLLocation) -> ToolWidget.Pin {
+        ToolWidget.Pin(name: "You", detail: "", latitude: here.coordinate.latitude, longitude: here.coordinate.longitude)
     }
 
     private static func link(_ name: String, _ coordinate: CLLocationCoordinate2D, _ title: String) -> ToolUse.Link? {

@@ -40,6 +40,8 @@ The Qwen models are Apache 2.0; Gemma 3 is under the [Gemma Terms of Use](https:
 
 **Message actions.** Long-press a prompt for Copy, Edit (rewinds the chat to it) and Select Text; long-press a reply for Copy, Read Aloud, Share, Regenerate (latest reply) and Select Text.
 
+**Tool islands.** Tools, connectors and attachments sit *inside* the prompt as small coloured capsules (Maps green, Calendar red, Reminders orange, Web blue, files amber, photos pink), the one splash of colour on the monochrome page. Picking one in the + tray puts its island at the cursor; long-press an island and drag it anywhere else in the text. Attachments still float above the prompt bar, and their island in the text points at them, so you can say where a file or photo matters. Tool islands apply to that message only: deleting one switches the tool off. The model reads islands by name ("find a café [Maps] …"); a Maps island searches Apple Maps even without "near me". Replies show what tools found as widgets in the text, right after the opening paragraph: a map with numbered places, a calculator result, a translation. The tool calls themselves fold into one grey line ("Used 2 tools") that opens to show each step and its sources.
+
 **Attachments and connectors** (the + tray). Photos, Camera, and Files (text, Markdown, code, CSV, JSON, PDF; trimmed to 4,000 characters to fit the 2,048-token context). Connectors add context right before a reply: Calendar (next 7 days) and Reminders via EventKit, Clipboard, and Wikipedia (sends only the question's key terms). Apple Notes has no public API, so it isn't offered. MCP servers (Streamable HTTP, optional bearer token in the Keychain) expose up to 8 tools each; the model calls them with `<tool_call>` blocks, at most two rounds per reply.
 
 In a Debug simulator build, launch with `-uiDemo` to load sample chats (never saved) for interface review.
@@ -89,6 +91,17 @@ The 8B vision model is intentionally substantial for a phone. The source does no
 - Image preprocessing: **512 × 512** bound; imported photo thumbnails are stored up to 1,024 pixels.
 - Prompt character guard: 6,000 characters, with the actual token count checked before inference.
 - A fresh KV cache is created per reply. Model and GPU cache are released when each job finishes. Older turns are automatically omitted when needed to fit the input budget. A single overlong prompt is rejected with a clear message.
+
+**How memory is kept down** (`App/InferenceEngine.swift`):
+
+- *Vision tower on disk.* Qwen3 VL's vision tower is stored unquantized (bf16). Loocal loads the language model itself and leaves the vision weights as lazy arrays over the model file: they're read in only for a reply with a photo, then put back. Loading is faster and its peak no longer includes them.
+- *Prompt read in steps, without next-word scores.* The stock Qwen path read the whole prompt in one pass and computed vocabulary scores (152k words) for every prompt token, about 600 MB at 2,048 tokens. The prompt now goes in 512-token steps (128 when tight) and only the KV cache is evaluated.
+- *8-bit KV cache past 1,024 tokens.* Short chats keep a bf16 cache, which is faster; long ones switch to 8 bits, about half the memory.
+- *Check before loading.* A model that can't fit in what iOS gives Loocal is refused with a message, not loaded until iOS kills the app. Memory from a model just released is waited for (it returns within about a second).
+
+Measured on an iPhone Air with the 8B, old engine → new: free memory after a short reply 466 MB → 1,566 MB; a 1,500-token prompt was killed by iOS → finished with 1,090 MB left; load 4.0 s → 2.8 s; writing speed about the same (8.5–8.9 tokens/s).
+
+**Several replies at once.** Chats and errands can write at the same time, up to three. They share one copy of the weights, each with its own KV cache, and take turns a token at a time, so each writes more slowly but none waits for another to finish. A new reply starts only when its whole cache fits next to the others; otherwise it waits its turn ("Next up"). A reply with a photo has the model to itself, because Qwen's image positions live on the shared model. If memory still runs low, the newest reply stops first and keeps its text. On the iPhone Air: two at once, about 4.3–4.9 tokens/s combined; three, about 3.6–4.0.
 
 The recent-history limit is deliberate. Older messages remain in the saved transcript but are not all sent to the model. The app is a local chat client, not a permanently running HTTP server.
 

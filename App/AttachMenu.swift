@@ -30,7 +30,7 @@ struct AttachControl: View {
     @State private var center: CGPoint = .zero
 
     /// Icon spacing; tightens when many icons must fit the composer width.
-    private var slot: CGFloat { min(42, 246 / CGFloat(max(items.count, 1))) } // fits beside the other composer buttons
+    private var slot: CGFloat { min(42, 228 / CGFloat(max(items.count, 1))) } // fits beside the other composer buttons
     private let size: CGFloat = 38
     private let spring = Animation.spring(response: 0.32, dampingFraction: 0.8)
 
@@ -198,41 +198,140 @@ struct AttachControl: View {
     }
 }
 
-// MARK: - Composer chips
+// MARK: - Attachments, floating above the prompt
 
-/// A mock attachment shown in the composer.
-struct AttachmentChip: Identifiable, Hashable {
-    let id: String
-    let icon: String
-    let title: String
-}
+/// A document drawn as a sheet of paper: folded corner, a few lines of "text", its type
+/// along the bottom. Used above the prompt and on sent messages.
+struct FileCard: View {
+    let name: String
+    var compact = false
 
-struct ChipRow: View {
-    let chips: [AttachmentChip]
-    let remove: (AttachmentChip) -> Void
+    private var kind: String {
+        let ext = (name as NSString).pathExtension.uppercased()
+        return ext.isEmpty ? "TXT" : String(ext.prefix(4))
+    }
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 6) {
-                ForEach(chips) { chip in
-                    HStack(spacing: 6) {
-                        Image(systemName: chip.icon).font(.system(size: 12))
-                        Text(chip.title).font(.geist(13, .medium)).lineLimit(1)
-                        Button { remove(chip) } label: {
-                            Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Ink.tertiary)
-                                .frame(width: 18, height: 18).contentShape(.circle)
-                        }
-                        .accessibilityLabel("Remove \(chip.title)")
-                    }
-                    .foregroundStyle(Ink.primary)
-                    .padding(.leading, 10).padding(.trailing, 4).frame(height: 30)
-                    .background(Capsule().fill(Ink.paper).overlay(Capsule().stroke(Ink.hairline)))
-                    .transition(.scale(scale: 0.6, anchor: .leading).combined(with: .opacity))
+        let w: CGFloat = compact ? 40 : 54, h: CGFloat = compact ? 50 : 68
+        ZStack(alignment: .topLeading) {
+            FoldedSheet(fold: compact ? 9 : 12)
+                .fill(Ink.paper)
+                .shadow(color: .black.opacity(0.13), radius: compact ? 4 : 8, y: compact ? 2 : 4)
+            FoldedSheet.Corner(fold: compact ? 9 : 12)
+                .fill(Ink.fill)
+            VStack(alignment: .leading, spacing: compact ? 2.5 : 3.5) {
+                ForEach([0.62, 0.8, 0.5, 0.72], id: \.self) { part in
+                    Capsule().fill(Ink.hairline).frame(width: (w - 16) * part, height: compact ? 1.6 : 2)
                 }
             }
-            .padding(.horizontal, 6).padding(.top, 4)
+            .padding(.top, compact ? 13 : 17).padding(.leading, compact ? 6 : 8)
+            Text(kind)
+                .font(.geist(compact ? 7.5 : 9, .semibold)).tracking(0.3)
+                .foregroundStyle(Ink.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                .padding(.leading, compact ? 6 : 8).padding(.bottom, compact ? 5 : 7)
         }
-        .scrollIndicators(.hidden)
+        .frame(width: w, height: h)
+        .accessibilityElement()
+        .accessibilityLabel("File \(name)")
+    }
+}
+
+/// A page with its top-right corner folded over.
+struct FoldedSheet: Shape {
+    var fold: CGFloat
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let radius: CGFloat = 6
+        p.move(to: CGPoint(x: r.minX + radius, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX - fold, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY + fold))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - radius))
+        p.addQuadCurve(to: CGPoint(x: r.maxX - radius, y: r.maxY), control: CGPoint(x: r.maxX, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX + radius, y: r.maxY))
+        p.addQuadCurve(to: CGPoint(x: r.minX, y: r.maxY - radius), control: CGPoint(x: r.minX, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY + radius))
+        p.addQuadCurve(to: CGPoint(x: r.minX + radius, y: r.minY), control: CGPoint(x: r.minX, y: r.minY))
+        p.closeSubpath()
+        return p
+    }
+
+    /// The folded-over flap.
+    struct Corner: Shape {
+        var fold: CGFloat
+        func path(in r: CGRect) -> Path {
+            var p = Path()
+            p.move(to: CGPoint(x: r.maxX - fold, y: r.minY))
+            p.addLine(to: CGPoint(x: r.maxX - fold, y: r.minY + fold - 2))
+            p.addQuadCurve(to: CGPoint(x: r.maxX - fold + 2, y: r.minY + fold), control: CGPoint(x: r.maxX - fold, y: r.minY + fold))
+            p.addLine(to: CGPoint(x: r.maxX, y: r.minY + fold))
+            p.closeSubpath()
+            return p
+        }
+    }
+}
+
+/// What's attached to the next message, floating above the prompt box: the photo as a
+/// little bordered print, each document as a sheet of paper, slightly askew.
+struct AttachmentShelf: View {
+    let photo: UIImage?
+    let files: [AttachedFile]
+    let preparing: Bool
+    let removePhoto: () -> Void
+    let removeFile: (AttachedFile) -> Void
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 14) {
+            if let photo {
+                Image(uiImage: photo)
+                    .resizable().scaledToFill()
+                    .frame(width: 66, height: 66)
+                    .clipShape(.rect(cornerRadius: 11))
+                    .padding(3.5)
+                    .background(Ink.paper, in: .rect(cornerRadius: 14))
+                    .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
+                    .overlay(alignment: .topTrailing) { RemoveBadge(label: "Remove photo", action: removePhoto) }
+                    .rotationEffect(.degrees(-3))
+                    .transition(.asymmetric(insertion: .offset(y: 26).combined(with: .scale(scale: 0.7, anchor: .bottom)).combined(with: .opacity), removal: .scale(scale: 0.6).combined(with: .opacity)))
+            }
+            if preparing {
+                RoundedRectangle(cornerRadius: 14).fill(Ink.paper)
+                    .frame(width: 73, height: 73)
+                    .shadow(color: .black.opacity(0.12), radius: 10, y: 5)
+                    .overlay { SpiralLoader(size: 18, color: Ink.secondary) }
+                    .rotationEffect(.degrees(-3))
+                    .transition(.opacity)
+            }
+            ForEach(Array(files.enumerated()), id: \.element.id) { i, file in
+                VStack(spacing: 6) {
+                    FileCard(name: file.name)
+                        .overlay(alignment: .topTrailing) { RemoveBadge(label: "Remove \(file.name)") { removeFile(file) } }
+                    Text(file.name).font(.geist(11)).foregroundStyle(Ink.secondary).lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: 70)
+                }
+                .rotationEffect(.degrees(i % 2 == 0 ? 3 : -2))
+                .transition(.asymmetric(insertion: .offset(y: 26).combined(with: .scale(scale: 0.7, anchor: .bottom)).combined(with: .opacity), removal: .scale(scale: 0.6).combined(with: .opacity)))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 26).padding(.bottom, 10).padding(.top, 6)
+    }
+}
+
+private struct RemoveBadge: View {
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark").font(.system(size: 8.5, weight: .bold)).foregroundStyle(Ink.paper)
+                .frame(width: 20, height: 20).background(Ink.primary, in: .circle)
+                .overlay(Circle().stroke(Ink.paper, lineWidth: 2))
+                .frame(width: 32, height: 32).contentShape(.circle)
+        }
+        .buttonStyle(PressStyle(scale: 0.85))
+        .offset(x: 12, y: -12)
+        .accessibilityLabel(label)
     }
 }
 

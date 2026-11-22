@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import PDFKit
 import UIKit
+import MLX
 
 @MainActor @Observable
 final class AppState {
@@ -25,24 +26,37 @@ final class AppState {
     var conversations: [Conversation]
     var selectedID: UUID
     var draft = ""
+    /// Tools, connectors and attachments placed in the draft's text.
+    var draftIslands: [Island] = []
     var attachmentName: String?
     /// Files attached to the next message; their text goes to the model with it.
     var attachedFiles: [AttachedFile] = []
     var activeConnectors: Set<String> { didSet { UserDefaults.standard.set(Array(activeConnectors), forKey: "connectors.active") } }
     var mcpServers: [MCPServer] { didSet { MCPServer.save(mcpServers) } }
     var connectors: [Connector] { Connector.builtIn + mcpServers.map(Connector.mcp) }
-    var isBusy = false { didSet { if isBusy { unloadTask?.cancel() } } }
-    var phase = "Ready"
-    var tokens = 0
+    /// Replies and errands on the go, by reply or run id: several write at once.
+    private(set) var working: Set<UUID> = []
+    /// Conversations with a reply on the way.
+    private(set) var replying: Set<UUID> = []
+    /// What each reply or errand is doing ("Reading prompt", "Generating"…), by its id.
+    private(set) var phases: [UUID: String] = [:]
+    /// The chat on screen is being answered: its composer waits, the rest of the app doesn't.
+    var isBusy: Bool { replying.contains(selectedID) }
+    /// Anything is writing, in any chat or errand.
+    var isWorking: Bool { !working.isEmpty }
+    /// The reply being written in the chat on screen.
+    var currentReplyID: UUID? { current.messages.last(where: { $0.status == .generating && $0.role == .assistant })?.id }
+    var phase: String { currentReplyID.flatMap { phases[$0] } ?? "Ready" }
     var performance = ""
     var notice: String?
     var error: String?
     @ObservationIgnored private let engine = InferenceEngine()
     @ObservationIgnored private let continued = ContinuedInference()
     @ObservationIgnored private let activity = ActivityController()
-    @ObservationIgnored private var generation: Task<Void, Never>?
+    @ObservationIgnored private var jobs: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var jobTokens: [UUID: Int] = [:]
+    @ObservationIgnored private var stopReasons: [UUID: String] = [:]
     @ObservationIgnored private var lastSaved = Date.distantPast
-    @ObservationIgnored private var stopReason: String?
     private(set) var isDemo = false
     /// The prompt box shows once the model is installed (the simulator demo pretends it is).
     var composerReady: Bool { download.isReady || isDemo }
@@ -61,6 +75,7 @@ final class AppState {
     var canSend: Bool { download.isReady && !isBusy && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || attachmentName != nil || !attachedFiles.isEmpty) }
 
     init() throws {
+        _ = MemoryHeadroom.bytes // notes how much iOS lets Loocal use, before any model loads
         let files = try LocalFiles()
         self.files = files
         desk = ErrandDesk(directory: files.root)
@@ -79,14 +94,8 @@ final class AppState {
         personaID = UserDefaults.standard.string(forKey: "persona").flatMap(UUID.init(uuidString:))
         memories = Memory.load()
         memoryOn = UserDefaults.standard.object(forKey: "memory.on") as? Bool ?? true
-        var connectorsOn = Set(UserDefaults.standard.stringArray(forKey: "connectors.active") ?? [])
-        // Web search starts switched on, once; after that it stays however you leave it.
-        if !UserDefaults.standard.bool(forKey: "connectors.webDefault") {
-            connectorsOn.insert(Connector.web.id)
-            UserDefaults.standard.set(true, forKey: "connectors.webDefault")
-            UserDefaults.standard.set(Array(connectorsOn), forKey: "connectors.active")
-        }
-        activeConnectors = connectorsOn
+        // Connectors live in the prompt as islands, one message at a time, so none start on.
+        activeConnectors = []
         mcpServers = MCPServer.load()
         let first = Conversation()
         conversations = [first]
@@ -123,14 +132,13 @@ final class AppState {
 
     /// Temporary chats vanish as soon as you move on from them.
     private func discardTemporary(keeping id: UUID? = nil) {
-        for conversation in conversations where conversation.isTemporary && conversation.id != id && !conversation.messages.isEmpty {
+        for conversation in conversations where conversation.isTemporary && conversation.id != id && !conversation.messages.isEmpty && !replying.contains(conversation.id) {
             for name in conversation.messages.compactMap(\.imageName) { try? FileManager.default.removeItem(at: files.images.appendingPathComponent(name)) }
             conversations.removeAll { $0.id == conversation.id }
         }
     }
 
     func newConversation() {
-        guard !isBusy else { return }
         discardTemporary()
         if let index = conversations.firstIndex(where: { $0.messages.isEmpty }) {
             conversations[index].temporary = nil
@@ -153,7 +161,6 @@ final class AppState {
     }
 
     func select(_ conversation: Conversation) {
-        guard !isBusy else { return }
         discardTemporary(keeping: conversation.id)
         selectedID = conversation.id
         draft = ""
@@ -169,6 +176,7 @@ final class AppState {
     func benchmark() async {
         guard download.isReady, let directory = try? download.loadingDirectory() else { print("BENCH no model ready"); return }
         let model = model
+        print("BENCH model \(model.name) free=\(MemoryHeadroom.megabytes)MB")
         for cpu in ComputeTarget.backgroundCPU ? [false, true] : [false] {
             ComputeTarget.mode = cpu ? .background : .foreground
             let start = Date()
@@ -190,8 +198,60 @@ final class AppState {
             }
         }
         ComputeTarget.mode = .foreground
+        print("BENCH idle free=\(MemoryHeadroom.megabytes)MB (model loaded)")
+        // A long prompt (about 1,500 tokens): the prompt-reading peak.
+        let filler = String(repeating: "The tide rises and falls twice a day as the moon pulls on the ocean, and fishermen plan around it. ", count: 70)
+        await benchPass("LONG", model: model, directory: directory, prompts: [filler + "\n\nSum this up in one sentence."])
+        await engine.unload()
+        for wait in [0, 1, 3, 6] {
+            try? await Task.sleep(for: .seconds(wait))
+            print("BENCH unloaded +\(wait)s free=\(MemoryHeadroom.megabytes)MB mlxActive=\(GPU.activeMemory / 1_048_576)MB mlxCache=\(GPU.cacheMemory / 1_048_576)MB")
+        }
+        // Replies at the same time, sharing the loaded weights.
+        await benchPass("PAIR", model: model, directory: directory, prompts: ["Name five rivers in Europe and one fact about each.", "Give me a four-line poem about autumn."])
+        await benchPass("TRIO", model: model, directory: directory, prompts: ["List three uses for baking soda.", "Explain what a prime number is.", "Suggest a name for a grey cat, and why."])
+        if model.vision {
+            // A photo: the vision tower is read from disk for it, then put back.
+            let name = "bench-red.jpg"
+            let red = UIGraphicsImageRenderer(size: CGSize(width: 256, height: 256)).image { context in
+                UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 256, height: 256))
+            }
+            try? red.jpegData(compressionQuality: 0.9)?.write(to: files.images.appendingPathComponent(name))
+            let floor = BenchFloor()
+            let sampler = Task { while !Task.isCancelled { await floor.sample(); try? await Task.sleep(for: .milliseconds(50)) } }
+            let reply = try? await engine.respond(model: model, directory: directory, system: InferenceEngine.defaultSystemPrompt, messages: [ChatMessage(role: .user, text: "What single colour fills this image? One word.", imageName: name)], imagesDirectory: files.images, update: { _, _ in }, phase: { _ in })
+            sampler.cancel()
+            print("BENCH PHOTO reply=\(reply?.text.prefix(40) ?? "failed") minFree=\(await floor.lowest)MB")
+            try? await Task.sleep(for: .seconds(1))
+            print("BENCH after photo free=\(MemoryHeadroom.megabytes)MB")
+            try? FileManager.default.removeItem(at: files.images.appendingPathComponent(name))
+        }
         await engine.unload()
         print("BENCH done")
+    }
+
+    /// Runs the prompts at once and prints wall time, total tokens and the lowest free memory.
+    private func benchPass(_ label: String, model: ModelChoice, directory: URL, prompts: [String]) async {
+        let start = Date()
+        let floor = BenchFloor()
+        let sampler = Task { while !Task.isCancelled { await floor.sample(); try? await Task.sleep(for: .milliseconds(50)) } }
+        let engine = engine, images = files.images
+        let results = await withTaskGroup(of: Result<InferenceResult, Error>.self) { group in
+            for prompt in prompts {
+                group.addTask {
+                    do { return .success(try await engine.respond(model: model, directory: directory, system: InferenceEngine.defaultSystemPrompt, messages: [ChatMessage(role: .user, text: prompt)], imagesDirectory: images, update: { _, _ in }, phase: { _ in })) }
+                    catch { return .failure(error) }
+                }
+            }
+            var all: [Result<InferenceResult, Error>] = []
+            for await result in group { all.append(result) }
+            return all
+        }
+        sampler.cancel()
+        let seconds = Date().timeIntervalSince(start)
+        let tokens = results.reduce(0) { $0 + ((try? $1.get().tokens) ?? 0) }
+        let failures = results.compactMap { if case .failure(let error) = $0 { return error.localizedDescription } else { return nil } }
+        print("BENCH \(label) n=\(prompts.count) wall=\(String(format: "%.1f", seconds))s tokens=\(tokens) aggregate=\(String(format: "%.2f", Double(tokens) / max(seconds, 0.001)))tok/s minFree=\(await floor.lowest)MB failures=\(failures)")
     }
     #endif
 
@@ -202,18 +262,20 @@ final class AppState {
         let thinking = Conversation(createdAt: .now, messages: [
             ChatMessage(role: .user, text: "What’s a good way to start journaling again after a long break?"),
             ChatMessage(role: .assistant, text: "Start smaller than feels useful. **Two lines a night** is enough: one thing that happened, one thing you noticed about it.\n\nIf a blank page stalls you, keep a single prompt for a week — *what took more energy than expected today?* — and let the habit come before the depth."),
-            ChatMessage(role: .user, text: "And if I miss a few days?"),
+            Self.demoAsk,
             ChatMessage(role: .assistant, text: "", status: .generating),
         ])
+        let sum = ToolUse(kind: "calc", icon: "function", running: "Calculating", done: "Calculated", detail: "18% of 64.50 = 11.61", status: .done,
+                          widget: .calculation(expression: "18% of 64.50", result: "11.61"))
         conversations = [
             thinking,
+            Conversation(createdAt: .now.addingTimeInterval(-1_800), messages: [ChatMessage(role: .user, text: "What’s an 18% tip on 64.50?"), ChatMessage(role: .assistant, text: "An 18% tip on 64.50 is **11.61**, so 76.11 in all.", tools: [sum])]),
             Conversation(createdAt: .now.addingTimeInterval(-3_600), messages: [ChatMessage(role: .user, text: "Explain what’s happening in this photo.", imageName: demoPhoto()), ChatMessage(role: .assistant, text: "A heron standing in shallow water at dusk, mid-strike.")]),
             Conversation(createdAt: .now.addingTimeInterval(-day), messages: [ChatMessage(role: .user, text: "Draft a short, warm note to my landlord"), ChatMessage(role: .assistant, text: "Hi Sam — thanks for sorting the boiler so quickly.")]),
             Conversation(createdAt: .now.addingTimeInterval(-4 * day), messages: [ChatMessage(role: .user, text: "Help me think through an idea: a tiny weekly newsletter"), ChatMessage(role: .assistant, text: "Begin with who it’s for, then the one thing they’d miss.")]),
             Conversation(createdAt: .now.addingTimeInterval(-20 * day), messages: [ChatMessage(role: .user, text: "Compare two ways to brew cold coffee"), ChatMessage(role: .assistant, text: "Immersion is forgiving; drip is brighter.")]),
         ]
         selectedID = thinking.id
-        phase = "Loading model"
         isDemo = true
         let brief = Errand(title: "Morning brief", instructions: ErrandIdea.all[0].instructions, cadence: .daily, hour: 7, minute: 30, weekday: 2, sources: [Connector.calendar.id, Connector.reminders.id], lastRun: .now)
         let week = Errand(title: "Plan my week", instructions: ErrandIdea.all[1].instructions, cadence: .weekly, hour: 8, minute: 0, weekday: 2, sources: [Connector.calendar.id], lastRun: .now)
@@ -226,6 +288,10 @@ final class AppState {
                       text: "**Your week.**\n\nMonday is light. Wednesday is tight: three meetings back to back, so prepare the review notes on Tuesday.", status: .done),
         ])
         streamDemo(conversationID: thinking.id, replyID: thinking.messages[3].id)
+        if ProcessInfo.processInfo.arguments.contains("-uiDemoAttach") {
+            attachmentName = demoPhoto(named: "demo-attach.jpg")
+            attachedFiles = [AttachedFile(name: "trip-notes.md", text: "Sunday: brunch, then the canal walk.")]
+        }
         if personas.isEmpty {
             personas = [
                 Persona(name: "Editor", icon: "pencil.line", prompt: "You are a sharp, kind editor. Tighten prose, keep the author's voice, and explain each change in one line."),
@@ -235,8 +301,7 @@ final class AppState {
     }
 
     /// A portrait gradient standing in for a photo, to check how attached images sit.
-    private func demoPhoto() -> String {
-        let name = "demo-photo.jpg"
+    private func demoPhoto(named name: String = "demo-photo.jpg") -> String {
         let size = CGSize(width: 900, height: 1200)
         let image = UIGraphicsImageRenderer(size: size).image { context in
             let colors = [UIColor(red: 0.95, green: 0.62, blue: 0.42, alpha: 1).cgColor, UIColor(red: 0.28, green: 0.32, blue: 0.55, alpha: 1).cgColor]
@@ -247,29 +312,45 @@ final class AppState {
         return name
     }
 
+    /// A prompt with islands in it: Maps where the place matters, Calendar where the time does.
+    private static let demoAsk: ChatMessage = {
+        let maps = Island.connector(.maps), calendar = Island.connector(.calendar)
+        var ask = ChatMessage(role: .user, text: "Find a quiet café \(maps.marker) for Sunday morning that doesn’t clash with \(calendar.marker)")
+        ask.islands = [maps, calendar]
+        return ask
+    }()
+
     /// Loops a fake streamed reply so the handwriting effect can be seen without a model.
     private func streamDemo(conversationID: UUID, replyID: UUID) {
-        let reply = "Then nothing is lost. Pick it back up with **tonight’s two lines**: no catching up, no apology.\n\nThe habit is the return, not the streak."
+        let reply = "Two quiet spots close by, both open from 8:00 on Sunday:\n\n**Café Lomi** is the calmer one, with big tables at the back. **Ten Belles** is nearer but fills up after 10. You’re free until **11:30**, so either works if you go early."
+        let pins = [
+            ToolWidget.Pin(name: "Café Lomi", detail: "650 m", latitude: 48.8899, longitude: 2.3517, url: URL(string: "https://maps.apple.com/?q=Cafe%20Lomi")),
+            ToolWidget.Pin(name: "Ten Belles", detail: "400 m", latitude: 48.8722, longitude: 2.3631, url: URL(string: "https://maps.apple.com/?q=Ten%20Belles")),
+            ToolWidget.Pin(name: "Le Peloton", detail: "1.2 km", latitude: 48.8556, longitude: 2.3562, url: URL(string: "https://maps.apple.com/?q=Le%20Peloton")),
+        ]
+        let here = ToolWidget.Pin(name: "You", detail: "", latitude: 48.8760, longitude: 2.3590)
         Task { @MainActor [weak self] in
             while let self {
                 self.setDemoReply(conversationID, replyID, text: "", status: .generating)
                 self.setDemoTools(conversationID, replyID, [])
-                self.phase = "Loading model"
+                self.phases[replyID] = "Loading model"
                 try? await Task.sleep(for: .seconds(1.8))
-                self.phase = "Thinking"
+                self.phases[replyID] = "Thinking"
                 try? await Task.sleep(for: .seconds(1.2))
-                var search = ToolUse(kind: Connector.web.id, icon: "magnifyingglass", running: "Searching the web", done: "Searched the web", detail: "restarting a journaling habit")
-                self.setDemoTools(conversationID, replyID, [search])
-                try? await Task.sleep(for: .seconds(2.2))
-                search.status = .done
-                search.links = [
-                    ToolUse.Link(title: "How to get back into journaling", url: URL(string: "https://www.nytimes.com/journaling")!),
-                    ToolUse.Link(title: "The two-minute rule for habits", url: URL(string: "https://jamesclear.com/two-minute-rule")!),
-                    ToolUse.Link(title: "Journaling — Wikipedia", url: URL(string: "https://en.wikipedia.org/wiki/Diary")!),
-                ]
-                self.setDemoTools(conversationID, replyID, [search])
+                var calendar = Connector.calendar.use
+                self.setDemoTools(conversationID, replyID, [calendar])
+                try? await Task.sleep(for: .seconds(1.2))
+                calendar.status = .done
+                var maps = ToolUse(kind: "places", icon: "mappin.and.ellipse", running: "Looking around you", done: "Searched Apple Maps", detail: "quiet café")
+                self.setDemoTools(conversationID, replyID, [calendar, maps])
+                try? await Task.sleep(for: .seconds(2))
+                maps.status = .done
+                maps.detail = "3 places · nearest 400 m"
+                maps.links = pins.map { ToolUse.Link(title: "\($0.name) · \($0.detail)", url: $0.url!) }
+                maps.widget = .map(title: "quiet café", pins: pins, here: here)
+                self.setDemoTools(conversationID, replyID, [calendar, maps])
                 try? await Task.sleep(for: .seconds(0.8))
-                self.phase = "Generating"
+                self.phases[replyID] = "Generating"
                 var text = ""
                 var rest = Substring(reply)
                 while !rest.isEmpty {
@@ -277,7 +358,6 @@ final class AppState {
                     rest = rest.dropFirst(chunk.count)
                     text += chunk
                     self.setDemoReply(conversationID, replyID, text: text, status: .generating)
-                    self.tokens += 1
                     try? await Task.sleep(for: .milliseconds(Int.random(in: 60...110)))
                 }
                 self.setDemoReply(conversationID, replyID, text: text, status: .complete)
@@ -294,7 +374,7 @@ final class AppState {
             "**All set.**\n\nShort version: you’re free after 16:00, and nothing clashes this week.",
         ]
         let reply = replies[abs(run.id.hashValue) % replies.count]
-        isBusy = true
+        working.insert(run.id)
         desk.begin(run.id)
         let gathered = errandContexts[run.id]
         Task { @MainActor [weak self] in
@@ -315,8 +395,7 @@ final class AppState {
             }
             if self.desk.runs.first(where: { $0.id == run.id })?.status == .running { self.desk.finish(run.id, status: .done) }
             self.errandContexts[run.id] = nil
-            self.isBusy = false
-            self.phase = "Complete"
+            self.working.remove(run.id)
             self.pumpErrands()
         }
     }
@@ -339,7 +418,13 @@ final class AppState {
     func edit(_ message: ChatMessage) {
         guard !isBusy, let ci = conversations.firstIndex(where: { $0.id == selectedID }),
               let mi = conversations[ci].messages.firstIndex(where: { $0.id == message.id }) else { return }
-        draft = message.text
+        // Tools come back as islands; the photo and files don't come back, so neither do theirs.
+        let kept = (message.islands ?? []).filter { $0.kind == .connector }
+        var text = message.text
+        for island in message.islands ?? [] where island.kind != .connector { text = text.replacingOccurrences(of: island.marker, with: "") }
+        draftIslands = kept
+        draft = text.replacingOccurrences(of: " {2,}", with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        activeConnectors = Set(kept.map(\.ref))
         for name in conversations[ci].messages[mi...].compactMap(\.imageName) {
             try? FileManager.default.removeItem(at: files.images.appendingPathComponent(name))
         }
@@ -432,7 +517,7 @@ final class AppState {
     }
 
     /// What the app around the model can do, so it never claims it can't look things up.
-    static let capabilities = "You run inside Loocal, on the user's iPhone. Loocal itself can: search the web and read links, find places near the user and travel times with Apple Maps (using their location), do exact maths and date counts, translate, add reminders and calendar events, run their Shortcuts, and remember things. When Loocal has done one of these for this message, its results are above: use them. Never say you have no location, internet or calendar access. If a request needs one of these and no result is above, ask them to say it plainly, for example “find restaurants near me”."
+    static let capabilities = "You run inside Loocal, on the user's iPhone. Loocal itself can: search the web and read links, find places near the user and travel times with Apple Maps (using their location), do exact maths and date counts, translate, read the user's calendar and reminders and add to them, run their Shortcuts, and remember things. When Loocal has done one of these for this message, its results are above: use them. Never say you have no location, internet or calendar access. Anything about the user's own life (their events, reminders, plans) must come from results above: never make it up. If they ask about their calendar and no calendar is above, say Loocal couldn't read it. If a request needs one of these and no result is above, ask them to say it plainly, for example “find restaurants near me”."
 
     /// Everything Loocal works out before a spoken answer, whichever model gives it:
     /// actions done, tool results, memory and web results.
@@ -446,6 +531,9 @@ final class AppState {
         }
         let found = await ToolBelt.run(for: question) { _ in }
         if !found.isEmpty { parts.append(found) }
+        let (asked, refusal) = await ConnectorHub.resolve(SourceIntent.wanted(question), ask: false)
+        if !asked.isEmpty { parts.append(await ConnectorHub.context(for: asked, prompt: question)) }
+        if !refusal.isEmpty { parts.append(refusal) }
         if (activeConnectors.contains(Connector.web.id) && WebSearch.wantsSearch(question)) || WebSearch.explicitlyAsked(question) {
             let query = WebSearch.searchQuery(from: question)
             parts.append((await Self.call(WebSearch.definition, arguments: WebSearch.arguments(for: query))).output + "\nAnswer in a few spoken sentences.")
@@ -458,13 +546,13 @@ final class AppState {
     /// Voice turns are kept in the current chat, like typed ones.
     func recordVoiceTurn(user: String, reply: String) {
         guard !isBusy, !isDemo, let index = conversations.firstIndex(where: { $0.id == selectedID }) else { return }
-        conversations[index].messages.append(ChatMessage(role: .user, text: user))
+        conversations[index].append(ChatMessage(role: .user, text: user))
         conversations[index].messages.append(ChatMessage(role: .assistant, text: reply))
         save()
     }
 
     func endVoice() {
-        if !isBusy { Task { await engine.unload() } }
+        if !isWorking { Task { await engine.unload() } }
         Task { await KokoroEngine.shared.unload() }
     }
 
@@ -479,7 +567,10 @@ final class AppState {
     }
 
     func delete(_ conversation: Conversation) {
-        guard !(isBusy && conversation.id == selectedID) else { return }
+        if replying.contains(conversation.id) {
+            for message in conversation.messages where message.status == .generating { stopJob(message.id, reason: "") }
+            replying.remove(conversation.id)
+        }
         for name in conversation.messages.compactMap(\.imageName) {
             try? FileManager.default.removeItem(at: files.images.appendingPathComponent(name))
         }
@@ -495,61 +586,126 @@ final class AppState {
         guard prompt.count <= 6000 else { error = "Shorten your prompt to 6,000 characters or fewer for the phone context."; return }
         let fallback = attachedFiles.isEmpty ? "Describe this image." : "Summarize the attached file."
         let context = attachedFiles.isEmpty ? nil : attachedFiles.map { "Attached file “\($0.name)”:\n\($0.text)" }.joined(separator: "\n\n")
-        let message = ChatMessage(role: .user, text: prompt.isEmpty ? fallback : prompt, imageName: attachmentName,
+        let islands = IslandText.present(in: prompt, draftIslands)
+        let hasAttachment = attachmentName != nil || !attachedFiles.isEmpty
+        // Only islands, no words: the attachment's usual question follows them.
+        let text = IslandText.stripped(prompt).isEmpty && hasAttachment ? (prompt.isEmpty ? fallback : prompt + " " + fallback) : prompt
+        var message = ChatMessage(role: .user, text: text, imageName: attachmentName,
                                   files: attachedFiles.isEmpty ? nil : attachedFiles.map(\.name), context: context)
+        message.islands = islands.isEmpty ? nil : islands
         attachedFiles = []
-        conversations[index].messages.append(message)
+        draftIslands = []
+        activeConnectors = []
+        conversations[index].append(message)
         draft = ""
         attachmentName = nil
         beginReply(in: index)
     }
 
-    /// Answer the conversation's last message (a new prompt, or a regenerated one).
+    /// Answer the conversation's last message (a new prompt, or a regenerated one). Other
+    /// chats and errands can be writing at the same time; the model takes turns between them.
     private func beginReply(in index: Int) {
         let history = conversations[index].messages
         let replyID = UUID()
+        let conversationID = conversations[index].id
         conversations[index].messages.append(ChatMessage(id: replyID, role: .assistant, text: "", status: .generating))
-        tokens = 0
-        phase = "Requesting background access"
         performance = ""
-        isBusy = true
-        stopReason = nil
         error = nil
-        save()
-        let conversationID = selectedID
         let model = model, system = systemPrompt
         let directory: URL
         do { directory = try download.loadingDirectory() } catch {
             conversations[index].messages.removeLast()
-            isBusy = false
             self.error = "The model files couldn’t be prepared: \(error.localizedDescription)"
             return
         }
+        replying.insert(conversationID)
+        save()
+        notice = nil
+        launch(replyID, model: model, phase: "Requesting background access", expire: "iOS ended the background task. Your partial reply is saved.") { [weak self] in
+            self?.run(model: model, directory: directory, system: system, history: history, conversationID: conversationID, replyID: replyID)
+        }
+    }
+
+    // MARK: Jobs
+
+    /// Starts a job (a reply or an errand). The first one asks iOS for background time and
+    /// puts up the Live Activity; the ones that join it share both.
+    private func launch(_ id: UUID, model: ModelChoice, phase: String, expire: String, _ body: @escaping () -> Void) {
+        unloadTask?.cancel()
+        let first = working.isEmpty
+        working.insert(id)
+        phases[id] = phase
+        jobTokens[id] = 0
         activity.modelName = model.name
         continued.modelName = model.name
-        notice = nil
-        continued.begin(onLaunch: { [weak self] in
-            self?.run(model: model, directory: directory, system: system, history: history, conversationID: conversationID, replyID: replyID)
-        }, onExpire: { [weak self] in
-            self?.stop(reason: "iOS ended the background task. Your partial reply is saved.")
-        })
+        let start = { [weak self] in
+            guard let self, self.working.contains(id) else { return } // stopped before it began
+            if !self.continued.hasGrant && !self.activity.isRunning { self.activity.start() }
+            body()
+        }
+        if first {
+            continued.begin(onLaunch: start, onExpire: { [weak self] in self?.stopAll(reason: expire) })
+        } else {
+            continued.join(start)
+        }
+    }
+
+    /// A job is over. When it was the last one, background time and the Live Activity end.
+    private func endJob(_ id: UUID, success: Bool, finalPhase: String) {
+        let total = jobTokens.values.reduce(0, +)
+        jobs[id] = nil
+        working.remove(id)
+        phases[id] = nil
+        jobTokens[id] = nil
+        stopReasons[id] = nil
+        if working.isEmpty {
+            continued.finish(success: success)
+            activity.finish(phase: finalPhase, count: total)
+            endGrace()
+        } else {
+            reportProgress(force: true)
+        }
+        save()
+        // Freed room goes to the oldest waiting errand; the model is released once all is quiet.
+        pumpErrands()
+        if working.isEmpty { releaseModelSoon() }
+    }
+
+    /// One line for the island and iOS's progress, however many jobs are writing.
+    private func reportProgress(force: Bool = false) {
+        let count = jobTokens.values.reduce(0, +)
+        let phase = working.count > 1 ? "Writing \(working.count) at once" : (working.first.flatMap { phases[$0] } ?? "Generating")
+        continued.update(phase: ComputeTarget.useCPU && working.count == 1 ? "Writing in background" : phase, count: count)
+        Task { await activity.update(phase: phase, count: count, force: force) }
     }
 
     private func run(model: ModelChoice, directory: URL, system: String, history: [ChatMessage], conversationID: UUID, replyID: UUID) {
-        // Continued processing already supplies a system Live Activity. Use the custom
-        // Dynamic Island activity only for foreground fallback, avoiding duplicate loaders.
-        if !continued.hasGrant { activity.start() }
-        let question = history.last(where: { $0.role == .user })?.text ?? ""
+        let prompt = history.last(where: { $0.role == .user })
+        // Tools spot what's asked from the words alone; the model reads islands by name.
+        let question = IslandText.stripped(prompt?.text ?? "")
+        let placed = Set((prompt?.islands ?? []).filter { $0.kind == .connector }.map(\.ref))
         // Asking for a search in so many words turns it on for this reply.
-        let active = WebSearch.explicitlyAsked(question) ? activeConnectors.union([Connector.web.id]) : activeConnectors
+        let active = WebSearch.explicitlyAsked(question) ? placed.union([Connector.web.id]) : placed
+        let history = history.map { message -> ChatMessage in
+            guard let islands = message.islands, !islands.isEmpty else { return message }
+            var spoken = message
+            spoken.text = IslandText.spoken(message.text, islands)
+            return spoken
+        }
         let tools = toolDefinitions(for: active)
-        generation = Task {
+        jobs[replyID] = Task {
+            var success = false
             do {
+                // "Check my calendar" reads the calendar even without an island; a source that
+                // isn't allowed is named to the model so it says so instead of inventing.
+                let (asked, refusal) = await ConnectorHub.resolve(SourceIntent.wanted(question).subtracting(active), ask: true)
+                let active = active.union(asked)
                 // Built-in connectors are read right before the reply and join the system prompt.
                 var system = system
-                let read = Connector.builtIn.filter { active.contains($0.id) && $0.id != Connector.web.id }
+                if !refusal.isEmpty { system += "\n\n" + refusal }
+                let read = Connector.builtIn.filter { active.contains($0.id) && $0.id != Connector.web.id && $0.id != Connector.maps.id }
                 if !read.isEmpty {
-                    await setPhase("Checking your sources")
+                    await setPhase(replyID, "Checking your sources")
                     let boxes = read.map(\.use)
                     for box in boxes { addTool(box, conversationID, replyID) }
                     let context = await ConnectorHub.context(for: active, prompt: question)
@@ -558,49 +714,46 @@ final class AppState {
                 }
                 // Something to do, not just answer: done first, then the reply confirms it.
                 if let action = ToolAction.detect(question) {
-                    await setPhase(action.box.running)
+                    await setPhase(replyID, action.box.running)
                     system += "\n\n" + (await act(action, conversationID: conversationID, replyID: replyID))
                 }
                 // Maths, dates, places, a linked page, translation: worked out for the model.
-                let found = await ToolBelt.run(for: question) { box in self.upsertTool(box, conversationID, replyID) }
+                let found = await ToolBelt.run(for: question, force: active) { box in self.upsertTool(box, conversationID, replyID) }
                 if !found.isEmpty { system += "\n\n" + found }
                 system += "\n\n" + Self.capabilities
                 if memoryOn, !memories.isEmpty { system += "\n\n" + Memory.prompt(memories) }
                 if active.contains(Connector.web.id) {
                     system += "\n\n" + WebSearch.guidance
                     if WebSearch.wantsSearch(question) {
-                        await setPhase("Searching the web")
+                        await setPhase(replyID, "Searching the web")
                         let query = WebSearch.searchQuery(from: question)
                         system += "\n\n" + (await useTool(WebSearch.definition, arguments: WebSearch.arguments(for: query), conversationID: conversationID, replyID: replyID))
                     }
                 }
+                // A typed reply doesn't need the natural voice engine (~330 MB) resident.
+                await KokoroEngine.shared.unload()
                 let result = try await engine.respond(model: model, directory: directory, system: system, messages: history, imagesDirectory: files.images, tools: tools, callTool: { definition, arguments in
                     await self.useTool(definition, arguments: arguments, conversationID: conversationID, replyID: replyID)
                 }, update: { text, count in
                     await self.received(text, count: count, conversationID: conversationID, replyID: replyID)
-                }, phase: { phase in await self.setPhase(phase) })
+                }, phase: { phase in await self.setPhase(replyID, phase) })
                 try Task.checkCancellation()
-                performance = "\(result.tokens) tokens · \(String(format: "%.1f", Double(result.tokens) / max(result.seconds, 0.001))) tok/s · \(result.headroom) MB free"
+                if conversationID == selectedID {
+                    performance = "\(result.tokens) tokens · \(String(format: "%.1f", Double(result.tokens) / max(result.seconds, 0.001))) tok/s · \(result.headroom) MB free"
+                }
                 markReply(conversationID, replyID, status: .complete)
-                phase = "Complete"
-                continued.finish(success: true)
-                activity.finish(phase: "Reply ready", count: tokens)
+                success = true
             } catch {
                 markReply(conversationID, replyID, status: .interrupted)
-                phase = "Stopped"
-                if Task.isCancelled { notice = stopReason ?? "Generation stopped. Your partial reply is saved." }
+                if Task.isCancelled {
+                    let reason = stopReasons[replyID] ?? "Generation stopped. Your partial reply is saved."
+                    if !reason.isEmpty { notice = reason }
+                }
                 else if case IslandError.lowMemory = error { notice = error.localizedDescription }
                 else { self.error = error.localizedDescription }
-                continued.finish(success: false)
-                activity.finish(phase: "Stopped", count: tokens)
             }
-            isBusy = false
-            generation = nil
-            save()
-            endGrace()
-            // Releasing the model after every job leaves memory available to other apps,
-            // unless an errand has been waiting for it.
-            if desk.runs.contains(where: { $0.status == .queued }) { pumpErrands() } else { releaseModelSoon() }
+            replying.remove(conversationID)
+            endJob(replyID, success: success, finalPhase: success ? "Reply ready" : "Stopped")
         }
     }
 
@@ -608,16 +761,15 @@ final class AppState {
         if let ci = conversations.firstIndex(where: { $0.id == conversationID }), let mi = conversations[ci].messages.firstIndex(where: { $0.id == replyID }) {
             conversations[ci].messages[mi].text = text
         }
-        tokens = count
-        continued.update(phase: ComputeTarget.useCPU ? "Writing in background" : "Generating", count: count)
-        await activity.update(phase: "Generating", count: count)
+        jobTokens[replyID] = count
+        reportProgress()
         if Date().timeIntervalSince(lastSaved) > 1 { save(); lastSaved = .now }
     }
 
-    private func setPhase(_ value: String) async {
-        phase = value
-        continued.update(phase: value, count: tokens)
-        await activity.update(phase: value, count: tokens, force: true)
+    private func setPhase(_ id: UUID, _ value: String) async {
+        guard working.contains(id) else { return }
+        phases[id] = value
+        reportProgress(force: true)
     }
 
     private func markReply(_ conversationID: UUID, _ replyID: UUID, status: ChatMessage.Status) {
@@ -796,7 +948,7 @@ final class AppState {
     func cancelErrand(_ run: ErrandRun) {
         guard let current = desk.runs.first(where: { $0.id == run.id }), current.isActive else { return }
         if current.status == .running {
-            stop(reason: "Errand stopped. Its partial result is saved.")
+            stopJob(run.id, reason: "Errand stopped. Its partial result is saved.")
         } else {
             errandContexts.removeValue(forKey: run.id)?.cancel()
             desk.finish(run.id, status: .stopped)
@@ -805,48 +957,47 @@ final class AppState {
 
     /// Fetches what an errand reads, in parallel with every other errand on the go.
     private func prepare(_ run: ErrandRun) {
-        let active = Set(run.sources).subtracting([Connector.web.id]) // the web is searched while writing
-        let names = connectors.filter { active.contains($0.id) }.map(\.name)
+        let picked = Set(run.sources).subtracting([Connector.web.id]) // the web is searched while writing
         let demo = isDemo
         errandContexts[run.id] = Task { [weak self] in
-            guard let self, !active.isEmpty else { return "" }
+            guard let self else { return "" }
+            // "What have I got next month" reads the calendar even if no source was picked.
+            let (asked, refusal) = demo ? ([], "") : await ConnectorHub.resolve(SourceIntent.wanted(run.instructions).subtracting(picked), ask: false)
+            let active = picked.union(asked)
+            guard !active.isEmpty else { return refusal }
+            let names = self.connectors.filter { active.contains($0.id) }.map(\.name)
             self.desk.setStage(run.id, "Reading " + ListFormatter.localizedString(byJoining: names))
             var context = ""
             if demo {
                 try? await Task.sleep(for: .seconds(Double.random(in: 0.8...2.2)))
             } else {
                 context = await ConnectorHub.context(for: active, prompt: run.instructions)
+                if !refusal.isEmpty { context += (context.isEmpty ? "" : "\n\n") + refusal }
             }
             if self.desk.runs.first(where: { $0.id == run.id })?.status == .queued { self.desk.setStage(run.id, ErrandRun.nextUp) }
             return context
         }
     }
 
-    /// Hands the model to the oldest waiting errand whenever it's free.
+    /// Starts waiting errands, oldest first, while there's a free lane. The engine still only
+    /// lets each one write once there's memory for it.
     func pumpErrands() {
-        guard !isBusy, let run = desk.runs.last(where: { $0.status == .queued }) else { return }
-        #if DEBUG && targetEnvironment(simulator)
-        if isDemo { demoErrand(run); return }
-        #endif
-        guard download.isReady else { return }
-        let directory: URL
-        do { directory = try download.loadingDirectory() } catch {
-            desk.finish(run.id, status: .failed, note: "The model files couldn’t be prepared: \(error.localizedDescription)")
-            return
+        while working.count < InferenceEngine.maxLanes, let run = desk.runs.last(where: { $0.status == .queued }) {
+            #if DEBUG && targetEnvironment(simulator)
+            if isDemo { demoErrand(run); continue }
+            #endif
+            guard download.isReady else { return }
+            let directory: URL
+            do { directory = try download.loadingDirectory() } catch {
+                desk.finish(run.id, status: .failed, note: "The model files couldn’t be prepared: \(error.localizedDescription)")
+                continue
+            }
+            desk.begin(run.id)
+            let model = model
+            launch(run.id, model: model, phase: "Starting errand", expire: "iOS ended the background task. The errand’s partial result is saved.") { [weak self] in
+                self?.performErrand(run, model: model, directory: directory)
+            }
         }
-        desk.begin(run.id)
-        tokens = 0
-        phase = "Starting errand"
-        isBusy = true
-        stopReason = nil
-        let model = model
-        activity.modelName = model.name
-        continued.modelName = model.name
-        continued.begin(onLaunch: { [weak self] in
-            self?.performErrand(run, model: model, directory: directory)
-        }, onExpire: { [weak self] in
-            self?.stop(reason: "iOS ended the background task. The errand’s partial result is saved.")
-        })
     }
 
     /// Runs every routine whose time has come. Called on launch, on return to the app (a
@@ -861,18 +1012,18 @@ final class AppState {
 
     /// Open an errand's result as a regular chat, to keep going from it.
     func continueInChat(_ run: ErrandRun) {
-        guard !isBusy else { return }
         newConversation()
         guard let index = conversations.firstIndex(where: { $0.id == selectedID }) else { return }
-        conversations[index].messages = [ChatMessage(role: .user, text: run.instructions), ChatMessage(role: .assistant, text: run.text)]
+        conversations[index].append(ChatMessage(role: .user, text: run.instructions))
+        conversations[index].append(ChatMessage(role: .assistant, text: run.text))
         save()
     }
 
     private func performErrand(_ run: ErrandRun, model: ModelChoice, directory: URL) {
-        if !continued.hasGrant { activity.start() }
         let tools = toolDefinitions(for: Set(run.sources))
         let gathered = errandContexts[run.id]
-        generation = Task {
+        jobs[run.id] = Task {
+            var success = false
             do {
                 // A persona's voice and know-how come first; the errand rules still apply.
                 let persona = personas.first { $0.id == run.personaID }?.prompt.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -894,68 +1045,76 @@ final class AppState {
                     }
                 }
                 desk.setStage(run.id, "Thinking")
+                await KokoroEngine.shared.unload()
                 _ = try await engine.respond(model: model, directory: directory, system: system, messages: [ChatMessage(role: .user, text: run.instructions)], imagesDirectory: files.images, tools: tools, callTool: { definition, arguments in
                     await Self.call(definition, arguments: arguments).output
                 }, update: { text, count in
                     await self.errandReceived(text, count: count, runID: run.id)
                 }, phase: { phase in
-                    await self.setPhase(phase)
+                    await self.setPhase(run.id, phase)
                     await MainActor.run { self.desk.setStage(run.id, phase == "Generating" ? "Writing" : phase) }
                 })
                 try Task.checkCancellation()
                 desk.finish(run.id, status: .done)
-                phase = "Complete"
-                continued.finish(success: true)
-                activity.finish(phase: "Errand done", count: tokens)
+                success = true
                 if UIApplication.shared.applicationState != .active, let done = desk.runs.first(where: { $0.id == run.id }) { ErrandDesk.announce(done) }
             } catch {
                 let cancelled = Task.isCancelled
                 desk.finish(run.id, status: cancelled ? .stopped : .failed, note: cancelled ? nil : error.localizedDescription)
-                phase = "Stopped"
-                if cancelled { notice = stopReason ?? "Errand stopped. Its partial result is saved." }
+                if cancelled {
+                    let reason = stopReasons[run.id] ?? "Errand stopped. Its partial result is saved."
+                    if !reason.isEmpty { notice = reason }
+                }
                 else if case IslandError.lowMemory = error { notice = error.localizedDescription }
-                continued.finish(success: false)
-                activity.finish(phase: "Stopped", count: tokens)
             }
             errandContexts[run.id] = nil
-            isBusy = false
-            generation = nil
-            endGrace()
-            // Keep the model loaded if another errand is waiting for it.
-            if !desk.runs.contains(where: { $0.status == .queued }) { releaseModelSoon() }
-            pumpErrands()
+            endJob(run.id, success: success, finalPhase: success ? "Errand done" : "Stopped")
         }
     }
 
     private func errandReceived(_ text: String, count: Int, runID: UUID) async {
         desk.update(runID, text: text, tokens: count)
-        tokens = count
-        continued.update(phase: ComputeTarget.useCPU ? "Writing in background" : "Generating", count: count)
-        await activity.update(phase: "Generating", count: count)
+        jobTokens[runID] = count
+        reportProgress()
     }
 
+    /// Stop the reply in the chat on screen.
     func stop(reason: String = "Generation stopped. Your partial reply is saved.") {
-        guard isBusy else { return }
-        stopReason = reason
-        phase = "Stopping"
-        if let generation { generation.cancel() }
-        else {
-            continued.finish(success: false)
-            activity.finish(phase: "Stopped", count: tokens)
-            if let index = conversations.firstIndex(where: { $0.id == selectedID }), let mi = conversations[index].messages.lastIndex(where: { $0.status == .generating }) { conversations[index].messages[mi].status = .interrupted }
-            desk.interruptRunning()
-            isBusy = false
-            notice = reason
-            save()
-            pumpErrands()
+        guard let id = currentReplyID, working.contains(id) else { return }
+        stopJob(id, reason: reason)
+    }
+
+    /// Stop everything at once (iOS took the background time back).
+    func stopAll(reason: String) {
+        for id in working { stopJob(id, reason: reason) }
+    }
+
+    /// Stop one reply or errand. A running one stops at its next token, keeping what it wrote;
+    /// one still waiting for iOS to say go simply never starts.
+    private func stopJob(_ id: UUID, reason: String) {
+        guard working.contains(id) else { return }
+        stopReasons[id] = reason
+        phases[id] = "Stopping"
+        if let job = jobs[id] { job.cancel(); return }
+        for ci in conversations.indices {
+            if let mi = conversations[ci].messages.firstIndex(where: { $0.id == id }) {
+                conversations[ci].messages[mi].status = .interrupted
+                replying.remove(conversations[ci].id)
+            }
         }
+        if desk.runs.contains(where: { $0.id == id }) {
+            errandContexts.removeValue(forKey: id)?.cancel()
+            desk.finish(id, status: .stopped)
+        }
+        if !reason.isEmpty { notice = reason }
+        endJob(id, success: false, finalPhase: "Stopped")
     }
 
     /// Leaving the app no longer stops a reply. Without background GPU, generation pauses at
     /// the next token as the app starts to leave, then moves to the CPU once it is really in
     /// the background (slower, but allowed), and back to the GPU on return.
     func willResignActive() {
-        if isBusy {
+        if isWorking {
             if !(continued.hasGrant && continued.grantedGPU) { ComputeTarget.mode = .leaving }
             if !continued.hasGrant && graceTask == .invalid {
                 // No continued-processing grant: borrow UIKit's short background window.
@@ -972,7 +1131,7 @@ final class AppState {
     func didEnterBackground() {
         if !(continued.hasGrant && continued.grantedGPU) { ComputeTarget.mode = .background }
         // Out of sight, the model's memory goes back to iOS straight away.
-        if !isBusy { unloadTask?.cancel(); Task { await engine.unload() } }
+        if !isWorking { unloadTask?.cancel(); Task { await engine.unload() } }
         save()
     }
 
@@ -1001,14 +1160,14 @@ final class AppState {
         unloadTask?.cancel()
         unloadTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(90))
-            guard let self, !Task.isCancelled, !self.isBusy else { return }
+            guard let self, !Task.isCancelled, !self.isWorking else { return }
             await self.engine.unload()
         }
     }
 
     func memoryWarning() {
         unloadTask?.cancel()
-        if !isBusy { Task { await engine.unload() } }
+        if !isWorking { Task { await engine.unload() } }
     }
 
     func discardAttachment() {
@@ -1044,6 +1203,12 @@ final class AppState {
 }
 
 #if DEBUG
+/// Lowest free memory seen during a benchmark pass.
+actor BenchFloor {
+    private(set) var lowest = Int.max
+    func sample() { lowest = min(lowest, MemoryHeadroom.megabytes) }
+}
+
 /// Timestamps for the benchmark.
 actor BenchMarks {
     private var phases: [(String, Date)] = []
