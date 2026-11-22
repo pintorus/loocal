@@ -186,6 +186,9 @@ class NeuralSpeech(private val engine: KokoroEngine, private val onIdle: () -> U
 
     fun level() = level
 
+    /** Softer while you start to speak over it (ducking), back to full when you don't. */
+    fun duck(on: Boolean) { track?.setVolume(if (on) 0.25f else 1f) }
+
     fun stop() {
         worker?.cancel(); worker = null
         queue.close(); queue = Channel(Channel.UNLIMITED)

@@ -87,7 +87,10 @@ class Speaker(context: Context, val kokoro: KokoroEngine = KokoroEngine(context.
         if (voice != null) applyVoice()
     }
 
-    fun stop() { pending.set(0); tts.stop(); neural.stop() }
+    fun stop() { pending.set(0); tts.stop(); neural.stop(); neural.duck(false) }
+
+    /** Ducks the voice the moment you speak over it (the natural voices; system voices can't change mid-sentence). */
+    fun duck(on: Boolean) = neural.duck(on)
 
     /** A gentle level while talking, for the Tide; the system engine exposes no audio level. */
     fun level(seconds: Double): Double = when {
@@ -139,6 +142,10 @@ class VoiceConversation(
 
     private var recognizer: SpeechRecognizer? = null
     private var running = false
+    /** The mic is open while Loocal thinks or talks, so you can cut in (full duplex). */
+    private var barging = false
+    private var talkingSince = 0L
+    private var ducked = false
     private var lastHeard = 0L
     private var silence: Job? = null
     private var replying: Job? = null
@@ -180,9 +187,10 @@ class VoiceConversation(
 
     // MARK: Listening
 
-    private fun startListening() {
+    private fun startListening(barge: Boolean = false) {
         if (!running || _state.value.muted) return
-        _state.update { s ->
+        barging = barge
+        if (!barge) _state.update { s ->
             val lines = if (s.lines.lastOrNull()?.fromUser != true || s.lines.last().text.isNotEmpty()) s.lines + Line(fromUser = true, text = "") else s.lines
             s.copy(phase = Phase.LISTENING, lines = lines.takeLast(8))
         }
@@ -194,6 +202,8 @@ class VoiceConversation(
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {}
             override fun onError(error: Int) {
+                // While Loocal talks, keep the mic open for as long as it does.
+                if (barging) { if (_state.value.phase != Phase.LISTENING) scope.launch { delay(150); startListening(barge = true) }; return }
                 // The recognizer timed out with nothing heard: keep listening.
                 if (_state.value.phase == Phase.LISTENING && currentSaid().isEmpty()) scope.launch { delay(150); restartListening() }
                 else endTurn()
@@ -207,9 +217,11 @@ class VoiceConversation(
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
             .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             .putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        runCatching { r.cancel() }
         r.startListening(intent)
         lastHeard = System.currentTimeMillis()
         silence?.cancel()
+        if (barge) return
         silence = scope.launch {
             while (isActive) {
                 delay(200)
@@ -222,9 +234,47 @@ class VoiceConversation(
 
     private fun currentSaid() = _state.value.lines.lastOrNull()?.takeIf { it.fromUser }?.text?.trim().orEmpty()
 
+    /** Words Loocal is saying now: the mic may pick them up, and they're never you. */
+    private fun echo(): Set<String> = _state.value.lines.lastOrNull()?.takeIf { !it.fromUser }?.text?.let { TurnTaking.words(it).toSet() }.orEmpty()
+
+    /** You spoke while Loocal thought or talked: duck at once, and take the floor once it's clearly you. */
+    private fun heardOver(text: String, final: Boolean) {
+        val echo = echo()
+        val mine = TurnTaking.strippingEcho(text, echo)
+        val novel = TurnTaking.words(mine).filter { it !in echo && it !in TurnTaking.backchannels }
+        if (novel.isNotEmpty() && !ducked) { ducked = true; speaker.duck(true) }
+        val talkingFor = (System.currentTimeMillis() - talkingSince) / 1000.0
+        if (TurnTaking.isInterruption(mine, echo, talkingFor)) { interrupt(mine); return }
+        if (final) { if (ducked) { ducked = false; speaker.duck(false) }; scope.launch { startListening(barge = true) } }
+    }
+
+    /** Loocal stops; the reply keeps only what was heard, and your words start the next turn. */
+    private fun interrupt(said: String) {
+        replying?.cancel()
+        speaker.stop()
+        ducked = false
+        val heard = _state.value.lines.lastOrNull()?.takeIf { !it.fromUser }?.text?.take(spoken)?.trim().orEmpty()
+        if (heard.isNotEmpty()) history.add(false to heard)
+        replyDone = true
+        _state.update { s ->
+            val lines = s.lines.let { if (it.lastOrNull()?.fromUser == false) it.dropLast(1) + it.last().copy(text = heard.ifEmpty { "…" }) else it }
+            s.copy(phase = Phase.LISTENING, lines = (lines + Line(fromUser = true, text = said)).takeLast(8))
+        }
+        barging = false
+        lastHeard = System.currentTimeMillis()
+        silence?.cancel()
+        silence = scope.launch {
+            while (isActive) {
+                delay(200)
+                if (_state.value.phase == Phase.LISTENING && currentSaid().isNotEmpty() && System.currentTimeMillis() - lastHeard > END_OF_TURN_MS) endTurn()
+            }
+        }
+    }
+
     private fun heard(bundle: Bundle?, final: Boolean) {
-        if (_state.value.phase != Phase.LISTENING) return
         val text = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+        if (barging) { if (!text.isNullOrBlank()) heardOver(text, final) else if (final) scope.launch { startListening(barge = true) }; return }
+        if (_state.value.phase != Phase.LISTENING) return
         if (!text.isNullOrEmpty() && text != currentSaid()) {
             _state.update { s -> s.copy(lines = s.lines.dropLast(1) + s.lines.last().copy(text = text)) }
             lastHeard = System.currentTimeMillis()
@@ -245,6 +295,8 @@ class VoiceConversation(
         stopListening()
         _state.update { it.copy(phase = Phase.THINKING) }
         respond(said)
+        // The mic stays open while Loocal thinks and talks.
+        scope.launch { delay(300); if (_state.value.phase != Phase.LISTENING) startListening(barge = true) }
     }
 
     // MARK: Replying
@@ -283,28 +335,32 @@ class VoiceConversation(
         speakPending(final = false)
     }
 
-    /** Speak each sentence as soon as it's complete, so the voice starts early. */
+    /** Speak each sentence as soon as it's complete; the very first clause goes out even sooner. */
     private fun speakPending(final: Boolean) {
         val line = _state.value.lines.lastOrNull()?.takeIf { !it.fromUser } ?: return
         val text = line.text
         var end = spoken
         if (final) end = text.length
-        else for (i in text.length - 2 downTo spoken) if (text[i] in ".!?…\n" && text[i + 1].isWhitespace()) { end = i + 1; break }
+        else {
+            for (i in text.length - 2 downTo spoken) if (text[i] in ".!?…\n" && text[i + 1].isWhitespace()) { end = i + 1; break }
+            if (end <= spoken && spoken == 0) TurnTaking.firstClauseEnd(text)?.let { end = it }
+        }
         if (end <= spoken) return
         val sentence = text.substring(spoken, end).trim()
         spoken = end
         if (sentence.isEmpty()) return
+        if (_state.value.phase != Phase.SPEAKING) talkingSince = System.currentTimeMillis()
         _state.update { it.copy(phase = Phase.SPEAKING) }
         speaker.speak(sentence)
     }
 
-    private fun resumeListening() { scope.launch { delay(250); startListening() } }
+    private fun resumeListening() { scope.launch { delay(250); if (ducked) { ducked = false; speaker.duck(false) }; startListening() } }
 
     private fun append(line: Line) = _state.update { it.copy(lines = (it.lines + line).takeLast(8)) }
 
     companion object {
         /** A pause this long after speech ends your turn. */
-        const val END_OF_TURN_MS = 1100L
+        const val END_OF_TURN_MS = 850L
         const val INSTRUCTIONS = "This is a spoken conversation. Reply in one to three short, natural sentences. No lists, headings or markdown."
     }
 }
