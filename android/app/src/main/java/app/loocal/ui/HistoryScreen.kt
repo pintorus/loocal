@@ -91,7 +91,7 @@ fun HistoryScreen(state: UiState, open: (Chat) -> Unit, delete: (Chat) -> Unit, 
                     }
                     items(chats, key = { it.id }) { chat ->
                         Column(Modifier.animateItem().rise(appeared, minOf(40 * (g * 2), 300), 8f)) {
-                            SwipeRow(chat, selected = chat.id == state.chat.id, enabled = !state.isBusy, open = open, delete = delete, togglePin = togglePin)
+                            SwipeRow(chat, selected = chat.id == state.chat.id, enabled = chat.id !in state.writing, writing = chat.id in state.writing, open = open, delete = delete, togglePin = togglePin)
                             if (chat != chats.last()) Hairline(Modifier.padding(start = 20.dp))
                         }
                     }
@@ -123,7 +123,7 @@ fun HistoryScreen(state: UiState, open: (Chat) -> Unit, delete: (Chat) -> Unit, 
 /** Swipe left to delete, right to pin, like the iOS swipe actions. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SwipeRow(chat: Chat, selected: Boolean, enabled: Boolean, open: (Chat) -> Unit, delete: (Chat) -> Unit, togglePin: (Chat) -> Unit) {
+private fun SwipeRow(chat: Chat, selected: Boolean, enabled: Boolean, writing: Boolean, open: (Chat) -> Unit, delete: (Chat) -> Unit, togglePin: (Chat) -> Unit) {
     val swipe = rememberSwipeToDismissBoxState(confirmValueChange = { value ->
         when (value) {
             SwipeToDismissBoxValue.EndToStart -> { delete(chat); true }
@@ -163,7 +163,8 @@ private fun SwipeRow(chat: Chat, selected: Boolean, enabled: Boolean, open: (Cha
                 }
                 Text(chat.title, style = geist(16, color = ink.primary), maxLines = 1, modifier = Modifier.weight(1f))
                 Spacer(Modifier.width(12.dp))
-                Text(dateLabel(chat.createdAt), style = geist(12, color = ink.tertiary))
+                // Still being answered: a small spiral where the date goes.
+                if (writing) SpiralLoader(12.dp, ink.secondary) else Text(dateLabel(chat.createdAt), style = geist(12, color = ink.tertiary))
             }
             chat.messages.lastOrNull { it.role == Role.ASSISTANT && it.text.isNotEmpty() }?.let {
                 Text(plainText(it.text).replace('\n', ' '), style = geist(14, color = ink.secondary), maxLines = 1)

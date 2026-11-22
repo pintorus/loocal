@@ -165,6 +165,11 @@ fun IslandField(
             if (view.text.toString() != text) {
                 view.setText(text)
                 view.setSelection(view.text.length)
+                // Sent: the keyboard goes down, as with the old field.
+                if (text.isEmpty()) {
+                    view.clearFocus()
+                    view.context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.hideSoftInputFromWindow(view.windowToken, 0)
+                }
             }
             decorate(context, view.editableText, islands, density)
         },

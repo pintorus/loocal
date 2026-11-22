@@ -279,7 +279,7 @@ fun ErrandScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, op
     Box(Modifier.fillMaxSize().background(ink.paper)) {
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
-                ModelSelector(state.models, state.modelId, vm::chooseModel, disabled = state.isBusy, dimmed = !state.modelReady)
+                ModelSelector(state.models, state.modelId, vm::chooseModel, disabled = state.anyWork, dimmed = !state.modelReady)
             }
             // The stage: the bot, and what it says.
             Column(
@@ -799,7 +799,7 @@ private fun RoutineCard(state: UiState, vm: ChatViewModel, errand: Errand, modif
                     Icon(Icons.Outlined.MoreHoriz, null, tint = ink.secondary, modifier = Modifier.size(18.dp))
                 }
                 DropdownMenu(menu, { menu = false }, containerColor = ink.paper) {
-                    DropdownMenuItem({ Text("Run now", style = geist(15, color = ink.primary)) }, { menu = false; vm.runErrand(errand.title, errand.instructions, errand.sources, errand.id) }, enabled = !state.isBusy, leadingIcon = { Icon(Icons.Outlined.Bolt, null, tint = ink.primary) })
+                    DropdownMenuItem({ Text("Run now", style = geist(15, color = ink.primary)) }, { menu = false; vm.runErrand(errand.title, errand.instructions, errand.sources, errand.id) }, leadingIcon = { Icon(Icons.Outlined.Bolt, null, tint = ink.primary) })
                     DropdownMenuItem({ Text(if (errand.paused) "Resume" else "Pause", style = geist(15, color = ink.primary)) }, { menu = false; vm.togglePause(errand) }, leadingIcon = { Icon(if (errand.paused) Icons.Outlined.PlayArrow else Icons.Outlined.Pause, null, tint = ink.primary) })
                     DropdownMenuItem({ Text("Delete", style = geist(15, color = Color(0xFFFF3B30))) }, { menu = false; vm.deleteRoutine(errand) })
                 }

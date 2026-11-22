@@ -198,7 +198,7 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp)
                 .pointerInput(Unit) { detectTapGestures { focus.clearFocus() } },
         ) {
-            ModelSelector(state.models, state.modelId, vm::chooseModel, disabled = state.isBusy, dimmed = !state.modelReady)
+            ModelSelector(state.models, state.modelId, vm::chooseModel, disabled = state.anyWork, dimmed = !state.modelReady)
             androidx.compose.animation.AnimatedVisibility(
                 state.isTemporary,
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
@@ -388,7 +388,7 @@ private fun Transcript(
             ) {
                 messages.drop(split).forEach { MessageRow(it, state, vm, held, setHeld, edit, select) }
                 if (state.generatingId != null) {
-                    AssistantMessage(Message(id = state.generatingId, role = Role.ASSISTANT, text = state.streaming, tools = state.streamingTools), generating = true, interrupted = false, phase = state.phase, undo = vm::undoAction)
+                    AssistantMessage(Message(id = state.generatingId!!, role = Role.ASSISTANT, text = state.streaming, tools = state.streamingTools), generating = true, interrupted = false, phase = state.phase, undo = vm::undoAction)
                 }
                 if (!state.isBusy && state.performance.isNotEmpty()) {
                     Text(state.performance, style = geist(11, color = ink.tertiary))

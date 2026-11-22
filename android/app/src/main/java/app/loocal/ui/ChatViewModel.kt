@@ -59,6 +59,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
@@ -68,6 +69,12 @@ data class DownloadStatus(val progress: Float? = null, val error: String? = null
 
 /** A photo waiting in the composer. */
 data class PendingPhoto(val name: String, val width: Int, val height: Int)
+
+/** Up to three replies write at once; they take turns on the model. */
+const val MAX_REPLIES = 3
+
+/** One reply being written in a chat. */
+data class Writing(val replyId: String, val text: String = "", val tools: List<ToolUse> = emptyList(), val phase: String = "", val tokens: Int = 0)
 
 data class UiState(
     val chat: Chat = Chat(),
@@ -79,14 +86,8 @@ data class UiState(
     val draftIslands: List<Island> = emptyList(),
     /** An island waiting to be put at the prompt's cursor; the field takes it and clears it. */
     val islandToInsert: Island? = null,
-    /** Id of the reply being written, while generating. */
-    val generatingId: String? = null,
-    /** Text written so far for [generatingId]. */
-    val streaming: String = "",
-    /** What the reply is doing before its first words ("Loading model", "Reading prompt"). */
-    val phase: String = "",
-    /** Tokens written so far in the reply being generated. */
-    val replyTokens: Int = 0,
+    /** Replies being written, by chat id: several chats can be answered at once (iOS parallel replies). */
+    val writing: Map<String, Writing> = emptyMap(),
     /** "512 tokens · 12.8 tok/s · 4,100 MB free" under the latest reply. */
     val performance: String = "",
     /** Replies the user stopped: shown with "Stopped · partial reply saved". */
@@ -98,8 +99,6 @@ data class UiState(
     val photo: PendingPhoto? = null,
     val preparingPhoto: Boolean = false,
     val files: List<AttachedFile> = emptyList(),
-    /** Boxes of the reply being written (sources, tools, actions). */
-    val streamingTools: List<ToolUse> = emptyList(),
     val activeConnectors: Set<String> = emptySet(),
     val servers: List<McpServer> = emptyList(),
     val memories: List<Memory> = emptyList(),
@@ -120,12 +119,23 @@ data class UiState(
     val model get() = models.firstOrNull { it.id == modelId } ?: models.first()
     val modelReady get() = model.id in ready
     val download get() = downloads[model.id] ?: DownloadStatus()
-    /** The model is writing: a chat reply or an errand. */
-    val isBusy get() = generatingId != null || runs.any { it.status == ErrandRun.Status.RUNNING }
+    private val here get() = writing[chat.id]
+    /** Id of this chat's reply being written. */
+    val generatingId get() = here?.replyId
+    /** Text written so far for [generatingId]. */
+    val streaming get() = here?.text.orEmpty()
+    /** What this chat's reply is doing before its first words ("Loading model", "Reading prompt"). */
+    val phase get() = here?.phase.orEmpty()
+    /** Boxes of the reply being written (sources, tools, actions). */
+    val streamingTools get() = here?.tools.orEmpty()
+    /** This chat is being answered. Other chats can still be opened and written in. */
+    val isBusy get() = chat.id in writing
+    /** The model has work: a reply in any chat, or an errand. */
+    val anyWork get() = writing.isNotEmpty() || runs.any { it.status == ErrandRun.Status.RUNNING }
     /** What sits with the bot: errands on the go (oldest first), then today's unseen results. Four at most. */
     val crew get() = (runs.filter { it.isActive }.reversed() + runs.filter { !it.isActive && !it.seen && it.startedAt > System.currentTimeMillis() - 12 * 3600_000L }).take(ErrandStore.CREW_SIZE)
     val errandPersona get() = personas.firstOrNull { it.id == errandPersonaId }
-    val canSend get() = modelReady && !isBusy && !preparingPhoto && (draft.isNotBlank() || photo != null || files.isNotEmpty())
+    val canSend get() = modelReady && !isBusy && writing.size < MAX_REPLIES && !preparingPhoto && (draft.isNotBlank() || photo != null || files.isNotEmpty())
     val persona get() = personas.firstOrNull { it.id == personaId }
     val isTemporary get() = chat.isTemporary
     val connectors get() = Connector.BUILT_IN + servers.map(Connector::mcp)
@@ -148,7 +158,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** System voices: read aloud, conversation mode, Settings › Voice. */
     val speaker = Speaker(app)
     private val prompts = PromptBuilder(engine::countTokens)
-    private var job: Job? = null
     private val downloadJobs = mutableMapOf<String, Job>()
 
     private val _state = MutableStateFlow(
@@ -185,10 +194,12 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // While the model writes, a foreground service keeps it going if you leave (iOS: continued processing).
         viewModelScope.launch {
             _state.collect { s ->
-                if (s.isBusy) {
+                if (s.anyWork) {
                     val errand = s.runs.firstOrNull { it.status == ErrandRun.Status.RUNNING }
+                    val reply = s.writing.values.firstOrNull()
+                    val many = s.writing.size + (if (errand != null) 1 else 0)
                     ReplyService.start(app, s.model.name)
-                    ReplyService.update(app, errand?.let { "Errand · " + (it.stage ?: "Writing") } ?: s.phase.ifEmpty { "Thinking" }, errand?.tokens ?: s.replyTokens, s.model.name)
+                    ReplyService.update(app, if (many > 1) "Writing $many replies" else errand?.let { "Errand · " + (it.stage ?: "Writing") } ?: reply?.phase?.ifEmpty { "Thinking" } ?: "Thinking", errand?.tokens ?: reply?.tokens ?: 0, s.model.name)
                 } else ReplyService.stop(app)
             }
         }
@@ -202,13 +213,11 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // MARK: Chats
 
     fun newChat() {
-        if (_state.value.isBusy) return
         leaveTemporary()
         _state.update { it.copy(chat = Chat(), draft = "", photo = null, files = emptyList(), performance = "") }
     }
 
     fun open(chat: Chat) {
-        if (_state.value.isBusy) return
         leaveTemporary()
         _state.update { it.copy(chat = chat, performance = "") }
     }
@@ -254,7 +263,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun chooseModel(id: String) {
-        if (_state.value.isBusy) return
+        if (_state.value.anyWork) return
         prefs.edit().putString("model", id).apply()
         // A text-only model can't take the photo waiting in the composer.
         _state.update { s -> s.copy(modelId = id, photo = if (models.first { it.id == id }.vision) s.photo else null.also { s.photo?.let { p -> photos.delete(listOf(p.name)) } }) }
@@ -271,7 +280,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun delete(chat: Chat) {
-        if (_state.value.isBusy && chat.id == _state.value.chat.id) return
+        if (chat.id in _state.value.writing) return
         photos.delete(chat.messages.mapNotNull { it.imageName })
         store.delete(chat.id)
         _state.update { it.copy(chats = store.loadChats(), chat = if (it.chat.id == chat.id) Chat() else it.chat) }
@@ -323,7 +332,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun cancelDownload(id: String) { downloadJobs[id]?.cancel() }
 
     fun deleteModel(id: String) {
-        if (_state.value.isBusy && id == _state.value.modelId) return
+        if (_state.value.anyWork && id == _state.value.modelId) return
         engine.unload()
         downloader.delete(models.first { it.id == id })
         _state.update { it.copy(ready = it.ready - id, downloads = it.downloads - id) }
@@ -478,7 +487,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** Calls a tool and keeps its box in the reply up to date; reads the top web result too. */
-    private suspend fun useTool(definition: ToolDefinition, arguments: String): String {
+    private suspend fun useTool(definition: ToolDefinition, arguments: String, showTool: (ToolUse) -> Unit): String {
         val local = WebSearch.isLocal(definition)
         val host = runCatching { java.net.URL(definition.url).host }.getOrDefault("server")
         val box = if (local) ToolUse(kind = Connector.WEB.id, icon = "magnifyingglass", running = "Searching the web", done = "Searched the web", detail = WebSearch.query(arguments))
@@ -499,10 +508,22 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         return output
     }
 
-    /** Adds the box to the reply being written, or updates it if it's already there. */
-    private fun showTool(use: ToolUse) = _state.update { s ->
-        s.copy(streamingTools = if (s.streamingTools.any { it.id == use.id }) s.streamingTools.map { if (it.id == use.id) use else it } else s.streamingTools + use)
+    /** Changes the reply being written in [chatId]. */
+    private fun writingIn(chatId: String, change: (Writing) -> Writing) = _state.update { s ->
+        val w = s.writing[chatId] ?: return@update s
+        s.copy(writing = s.writing + (chatId to change(w)))
     }
+
+    /** Adds the box to the reply being written in [chatId], or updates it if it's already there. */
+    private fun showTool(chatId: String, use: ToolUse) = writingIn(chatId) { w ->
+        w.copy(tools = if (w.tools.any { it.id == use.id }) w.tools.map { if (it.id == use.id) use else it } else w.tools + use)
+    }
+
+    /** One reply or errand on the model at a time; the others wait their turn. */
+    private val engineTurn = kotlinx.coroutines.sync.Mutex()
+
+    /** Each chat's reply, so Stop stops that one. */
+    private val jobs = HashMap<String, Job>()
 
     // MARK: Sending
 
@@ -525,6 +546,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             files = s.files.map { it.name }, context = context,
         )
         _state.update { it.copy(draft = "", draftIslands = emptyList(), photo = null, files = emptyList(), chat = it.chat.appending(message)) }
+        persist() // in History right away, marked as being answered
         reply()
     }
 
@@ -549,13 +571,20 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         persist()
     }
 
-    fun stop() { job?.cancel(); errandJob?.cancel() }
+    /** Stops this chat's reply; with none, the errand being written. */
+    fun stop() {
+        val id = _state.value.chat.id
+        jobs[id]?.let { it.cancel(); return }
+        errandJobs.values.toList().forEach { it.cancel() }
+    }
 
     private fun reply() {
         val replyId = java.util.UUID.randomUUID().toString()
         val manifest = _state.value.model
-        job = viewModelScope.launch {
-            _state.update { it.copy(generatingId = replyId, streaming = "", streamingTools = emptyList(), phase = "", performance = "", error = null) }
+        val chatId = _state.value.chat.id
+        _state.update { it.copy(writing = it.writing + (chatId to Writing(replyId)), performance = "", error = null) }
+        val showTool = { use: ToolUse -> showTool(chatId, use) }
+        jobs[chatId] = viewModelScope.launch {
             val buffer = StringBuilder()
             var tokens = 0
             var stopped = false
@@ -579,9 +608,9 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // Built-in connectors are read right before the reply and join the system prompt.
                 val read = Connector.BUILT_IN.filter { it.id in active && it.id != Connector.WEB.id && it.id != Connector.MAPS.id }
                 if (read.isNotEmpty()) {
-                    _state.update { it.copy(phase = "Checking your sources") }
+                    writingIn(chatId) { it.copy(phase = "Checking your sources") }
                     val boxes = read.map { it.use() }
-                    boxes.forEach(::showTool)
+                    boxes.forEach(showTool)
                     val context = ConnectorHub.context(app, active, question, tools.reminders)
                     boxes.forEach { box -> showTool(box.copy(status = if (box.kind == Connector.WIKIPEDIA.id && !context.contains("Wikipedia —")) ToolUse.Status.FAILED else ToolUse.Status.DONE)) }
                     if (context.isNotEmpty()) system += "\n\n" + context
@@ -589,7 +618,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 // Something to do, not just answer: done first, then the reply confirms it.
                 ToolAction.detect(question)?.let { action ->
                     val box = action.box()
-                    _state.update { it.copy(phase = box.running) }
+                    writingIn(chatId) { it.copy(phase = box.running) }
                     showTool(box)
                     val (done, error) = withContext(Dispatchers.IO) { actions.perform(action) }
                     showTool(box.copy(action = done, status = if (error == null) ToolUse.Status.DONE else ToolUse.Status.FAILED, detail = error ?: if (action.kind == ToolAction.Kind.FORGET) done.title else box.detail))
@@ -597,47 +626,51 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     system += "\n\n" + action.note(error == null, error)
                 }
                 // Maths, dates, places, a linked page, translation: worked out for the model.
-                val found = ToolBelt.run(app, question, active, ::showTool)
+                val found = ToolBelt.run(app, question, active, showTool)
                 if (found.isNotEmpty()) system += "\n\n" + found
                 system += "\n\n" + CAPABILITIES
                 if (s.memoryOn && tools.memories.isNotEmpty()) system += "\n\n" + Memory.prompt(tools.memories)
                 if (Connector.WEB.id in active) {
                     system += "\n\n" + WebSearch.GUIDANCE
                     if (WebSearch.wantsSearch(question)) {
-                        _state.update { it.copy(phase = "Searching the web") }
-                        system += "\n\n" + useTool(WebSearch.definition, WebSearch.arguments(WebSearch.searchQuery(question)))
+                        writingIn(chatId) { it.copy(phase = "Searching the web") }
+                        system += "\n\n" + useTool(WebSearch.definition, WebSearch.arguments(WebSearch.searchQuery(question)), showTool)
                     }
                 }
                 if (definitions.isNotEmpty()) system += "\n\n" + ToolCall.describe(definitions)
 
-                if (!engine.isLoaded) _state.update { it.copy(phase = "Loading model") }
-                engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
-                val vision = manifest.vision && engine.hasVision
+                val vision = manifest.vision
                 var history = s.chat.messages
                 started = System.nanoTime()
                 // A reply may call a tool (at most two rounds); its result is added and generation resumes.
                 for (round in 0..2) {
-                    _state.update { it.copy(phase = "Reading prompt") }
-                    val prepared = withContext(Dispatchers.Default) { prompts.prepare(history, s.persona, vision, system) }
-                    if (prepared == PreparedPrompt.TooLong) error("This prompt exceeds the 2,048-token phone context. Shorten your message or attach a smaller file.")
-                    prepared as PreparedPrompt.Ready
-                    val photo = prepared.photo?.let { slot ->
-                        PhotoInput(slot, withContext(Dispatchers.IO) { photos.rgb(prepared.messages[slot.index].imageName!!, slot.width, slot.height) })
-                    }
+                    if (engineTurn.isLocked) writingIn(chatId) { it.copy(phase = "Waiting its turn") }
                     buffer.clear()
-                    engine.generate(prepared.system, prepared.messages, photo).collect { piece ->
-                        tokens++
-                        if (piece.isNotEmpty()) {
-                            buffer.append(piece)
-                            _state.update { it.copy(streaming = ToolCall.visible(buffer.toString()), phase = "Generating", replyTokens = tokens) }
+                    // The model is loaded, the prompt counted and written in one turn on the engine.
+                    engineTurn.withLock {
+                        if (!engine.isLoaded) writingIn(chatId) { it.copy(phase = "Loading model") }
+                        engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
+                        writingIn(chatId) { it.copy(phase = "Reading prompt") }
+                        val prepared = withContext(Dispatchers.Default) { prompts.prepare(history, s.persona, vision && engine.hasVision, system) }
+                        if (prepared == PreparedPrompt.TooLong) error("This prompt exceeds the 2,048-token phone context. Shorten your message or attach a smaller file.")
+                        prepared as PreparedPrompt.Ready
+                        val photo = prepared.photo?.let { slot ->
+                            PhotoInput(slot, withContext(Dispatchers.IO) { photos.rgb(prepared.messages[slot.index].imageName!!, slot.width, slot.height) })
+                        }
+                        engine.generate(prepared.system, prepared.messages, photo).collect { piece ->
+                            tokens++
+                            if (piece.isNotEmpty()) {
+                                buffer.append(piece)
+                                writingIn(chatId) { it.copy(text = ToolCall.visible(buffer.toString()), phase = "Generating", tokens = tokens) }
+                            }
                         }
                     }
                     val text = buffer.toString()
                     val call = if (round < 2) ToolCall.parse(text) else null
                     val tool = call?.let { (name, _) -> definitions.firstOrNull { it.tool.name == name } }
                     if (call == null || tool == null) break
-                    _state.update { it.copy(phase = if (WebSearch.isLocal(tool)) "Searching the web" else "Using ${tool.tool.name}") }
-                    val output = useTool(tool, call.second).take(1500)
+                    writingIn(chatId) { it.copy(phase = if (WebSearch.isLocal(tool)) "Searching the web" else "Using ${tool.tool.name}") }
+                    val output = useTool(tool, call.second, showTool).take(1500)
                     history = history + Message(role = Role.ASSISTANT, text = text) + Message(role = Role.USER, text = "Result of ${tool.tool.name}:\n$output")
                     if (round == 2) error("The model kept calling tools without answering.")
                 }
@@ -648,7 +681,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             } finally {
                 val seconds = if (started > 0) (System.nanoTime() - started) / 1e9 else 0.0
                 val performance = if (tokens > 0 && !stopped) "$tokens tokens · ${"%.1f".format(tokens / seconds.coerceAtLeast(0.001))} tok/s · ${freeMegabytes()} MB free" else ""
-                finishReply(replyId, ToolCall.visible(buffer.toString()).trim(), stopped, performance)
+                finishReply(chatId, replyId, ToolCall.visible(buffer.toString()).trim(), stopped, performance)
             }
         }
     }
@@ -659,18 +692,26 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         return info.availMem / (1024 * 1024)
     }
 
-    private fun finishReply(id: String, text: String, stopped: Boolean, performance: String) {
+    /** Puts the finished reply in its chat, whether it's on screen or not. */
+    private fun finishReply(chatId: String, id: String, text: String, stopped: Boolean, performance: String) {
+        jobs.remove(chatId)
+        var finished: Chat? = null
         _state.update { s ->
             // A reply that stops mid-tool leaves no box spinning.
-            val boxes = s.streamingTools.map { if (it.status == ToolUse.Status.RUNNING) it.copy(status = ToolUse.Status.FAILED) else it }
-            val chat = if (text.isEmpty() && boxes.isEmpty()) s.chat else s.chat.appending(Message(id = id, role = Role.ASSISTANT, text = text, tools = boxes))
+            val boxes = s.writing[chatId]?.tools.orEmpty().map { if (it.status == ToolUse.Status.RUNNING) it.copy(status = ToolUse.Status.FAILED) else it }
+            val onScreen = s.chat.id == chatId
+            val base = if (onScreen) s.chat else s.chats.firstOrNull { it.id == chatId }
+            val chat = if (base == null || (text.isEmpty() && boxes.isEmpty())) base else base.appending(Message(id = id, role = Role.ASSISTANT, text = text, tools = boxes))
+            finished = chat
             s.copy(
-                chat = chat, generatingId = null, streaming = "", streamingTools = emptyList(), phase = "", performance = performance,
+                chat = if (onScreen && chat != null) chat else s.chat, writing = s.writing - chatId,
+                performance = if (onScreen) performance else s.performance,
                 interrupted = if (stopped && text.isNotEmpty()) s.interrupted + id else s.interrupted,
                 notice = if (stopped) "Generation stopped. Your partial reply is saved." else s.notice,
             )
         }
-        persist()
+        finished?.let { store.save(it) }
+        _state.update { it.copy(chats = store.loadChats()) }
         pumpErrands()
     }
 
@@ -732,16 +773,17 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private suspend fun voiceReply(history: List<Pair<Boolean, String>>, update: (String) -> Unit): String {
         val s = _state.value
         if (!s.modelReady) error("Download a model first.")
-        if (s.isBusy) error("Loocal is already answering in the chat.")
         val question = history.lastOrNull { it.first }?.second.orEmpty()
         val system = prompts.systemPrompt(s.persona) + "\n\n" + VoiceConversation.INSTRUCTIONS + "\n\n" + voiceContext(question)
         val manifest = s.model
-        engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
         val messages = history.map { (user, text) -> Message(role = if (user) Role.USER else Role.ASSISTANT, text = text) }
-        val prepared = withContext(Dispatchers.Default) { prompts.prepare(messages, s.persona, false, system) } as? PreparedPrompt.Ready
-            ?: error("That was too long for the phone's context.")
         val buffer = StringBuilder()
-        engine.generate(prepared.system, prepared.messages).collect { piece -> if (piece.isNotEmpty()) { buffer.append(piece); update(ToolCall.visible(buffer.toString())) } }
+        engineTurn.withLock {
+            engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
+            val prepared = withContext(Dispatchers.Default) { prompts.prepare(messages, s.persona, false, system) } as? PreparedPrompt.Ready
+                ?: error("That was too long for the phone's context.")
+            engine.generate(prepared.system, prepared.messages).collect { piece -> if (piece.isNotEmpty()) { buffer.append(piece); update(ToolCall.visible(buffer.toString())) } }
+        }
         return ToolCall.visible(buffer.toString()).trim()
     }
 
@@ -780,7 +822,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** Each errand gathers its sources as soon as it's sent, all at once; only the writing waits its turn. */
     private val errandContexts = mutableMapOf<String, Deferred<String>>()
-    private var errandJob: Job? = null
+    /** Errands being written, by run id; they start together and take turns on the model. */
+    private val errandJobs = HashMap<String, Job>()
 
     private fun updateDesk(change: (List<Errand>, List<ErrandRun>) -> Pair<List<Errand>, List<ErrandRun>>) {
         _state.update { s -> val (e, r) = change(s.errands, s.runs); s.copy(errands = e, runs = r) }
@@ -872,10 +915,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** Hands the model to the oldest waiting errand whenever it's free. */
     fun pumpErrands() {
         val s = _state.value
-        if (s.isBusy || !s.modelReady) return
-        val run = s.runs.lastOrNull { it.status == ErrandRun.Status.QUEUED } ?: return
-        updateRun(run.id) { it.copy(status = ErrandRun.Status.RUNNING, stage = "Thinking", tokens = 0) }
-        errandJob = viewModelScope.launch { performErrand(run) }
+        if (!s.modelReady) return
+        // Waiting errands start together, up to three on the go; the model takes turns between them.
+        val room = MAX_REPLIES - s.runs.count { it.status == ErrandRun.Status.RUNNING }
+        s.runs.filter { it.status == ErrandRun.Status.QUEUED }.reversed().take(room.coerceAtLeast(0)).forEach { run ->
+            updateRun(run.id) { it.copy(status = ErrandRun.Status.RUNNING, stage = "Thinking", tokens = 0) }
+            errandJobs[run.id] = viewModelScope.launch { performErrand(run) }
+        }
     }
 
     private suspend fun performErrand(run: ErrandRun) {
@@ -903,15 +949,19 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             if (definitions.isNotEmpty()) system += "\n\n" + ToolCall.describe(definitions)
             updateRun(run.id) { it.copy(stage = "Thinking") }
             val manifest = s.model
-            engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
             var history = listOf(Message(role = Role.USER, text = run.instructions))
             for (round in 0..2) {
-                val prepared = withContext(Dispatchers.Default) { prompts.prepare(history, null, false, system) } as? PreparedPrompt.Ready
-                    ?: error("The errand is too long for the phone's context.")
                 buffer.clear()
-                engine.generate(prepared.system, prepared.messages).collect { piece ->
-                    tokens++
-                    if (piece.isNotEmpty()) { buffer.append(piece); updateRunLight(run.id, ToolCall.visible(buffer.toString()), tokens) }
+                if (engineTurn.isLocked) updateRun(run.id) { it.copy(stage = "Waiting its turn") }
+                engineTurn.withLock {
+                    updateRun(run.id) { it.copy(stage = "Thinking") }
+                    engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
+                    val prepared = withContext(Dispatchers.Default) { prompts.prepare(history, null, false, system) } as? PreparedPrompt.Ready
+                        ?: error("The errand is too long for the phone's context.")
+                    engine.generate(prepared.system, prepared.messages).collect { piece ->
+                        tokens++
+                        if (piece.isNotEmpty()) { buffer.append(piece); updateRunLight(run.id, ToolCall.visible(buffer.toString()), tokens) }
+                    }
                 }
                 val text = buffer.toString()
                 val call = if (round < 2) ToolCall.parse(text) else null
@@ -929,7 +979,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             updateRun(run.id) { it.copy(status = ErrandRun.Status.FAILED, stage = null, note = e.message, text = ToolCall.visible(buffer.toString()).trim()) }
         }
         errandContexts.remove(run.id)
-        errandJob = null
+        errandJobs.remove(run.id)
         pumpErrands()
     }
 
@@ -943,7 +993,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** Stops one errand: a waiting one just leaves the crew, the writing one stops mid-way. */
     fun cancelErrand(run: ErrandRun) {
         val current = _state.value.runs.firstOrNull { it.id == run.id }?.takeIf { it.isActive } ?: return
-        if (current.status == ErrandRun.Status.RUNNING) errandJob?.cancel()
+        if (current.status == ErrandRun.Status.RUNNING) errandJobs[run.id]?.cancel()
         else { errandContexts.remove(run.id)?.cancel(); updateRun(run.id) { it.copy(status = ErrandRun.Status.STOPPED, stage = null) } }
     }
 
@@ -975,7 +1025,6 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** Opens an errand's result as a regular chat, to keep going from it. */
     fun continueInChat(run: ErrandRun) {
-        if (_state.value.isBusy) { _state.update { it.copy(error = "Wait for the current reply to finish, then continue in chat.") }; return }
         leaveTemporary()
         _state.update { it.copy(chat = Chat(messages = listOf(Message(role = Role.USER, text = run.instructions), Message(role = Role.ASSISTANT, text = run.text))), performance = "") }
         persist()
