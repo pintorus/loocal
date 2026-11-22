@@ -173,6 +173,11 @@ Java_app_loocal_inference_LlamaEngine_nativeLoad(JNIEnv *env, jobject, jstring j
     cp.n_threads = std::clamp((int) threads, 1, cores);
     cp.n_threads_batch = std::clamp((int) threads_batch, 1, cores);
     cp.no_perf = true;
+    // KV cache in 8 bits (iOS keeps it in 8 bits past 1,024 tokens): half the memory of f16 for the
+    // whole 2,560-token context, at no visible cost to the replies. Quantized V needs flash attention.
+    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    cp.type_k = GGML_TYPE_Q8_0;
+    cp.type_v = GGML_TYPE_Q8_0;
     e->ctx = llama_init_from_model(e->model, cp);
     if (!e->ctx) { LOGE("cannot create context"); llama_model_free(e->model); delete e; return 0; }
 

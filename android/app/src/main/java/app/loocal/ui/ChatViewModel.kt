@@ -649,7 +649,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     // The model is loaded, the prompt counted and written in one turn on the engine.
                     engineTurn.withLock {
                         if (!engine.isLoaded) writingIn(chatId) { it.copy(phase = "Loading model") }
-                        engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
+                        loadModel(manifest)
                         writingIn(chatId) { it.copy(phase = "Reading prompt") }
                         val prepared = withContext(Dispatchers.Default) { prompts.prepare(history, s.persona, vision && engine.hasVision, system) }
                         if (prepared == PreparedPrompt.TooLong) error("This prompt exceeds the 2,048-token phone context. Shorten your message or attach a smaller file.")
@@ -684,6 +684,20 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 finishReply(chatId, replyId, ToolCall.visible(buffer.toString()).trim(), stopped, performance)
             }
         }
+    }
+
+    /**
+     * Loads the model, unless it could never fit: its weights plus room for the cache and the app
+     * must stay under the phone's memory, or Android would kill Loocal mid-reply (iOS refuses the same way).
+     */
+    private suspend fun loadModel(manifest: ModelManifest) {
+        val weights = downloader.file(manifest, manifest.weights)
+        if (!engine.isLoaded) {
+            val info = ActivityManager.MemoryInfo().also { app.getSystemService(ActivityManager::class.java).getMemoryInfo(it) }
+            val needed = weights.length() + (manifest.projector?.let { downloader.file(manifest, it).length() } ?: 0L) + 700L * 1024 * 1024
+            if (needed > info.totalMem * 0.75) error("${manifest.name} needs more memory than this phone has. Choose a smaller model.")
+        }
+        engine.load(weights.path, manifest.projector?.let { downloader.file(manifest, it).path })
     }
 
     private fun freeMegabytes(): Long {
@@ -779,7 +793,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val messages = history.map { (user, text) -> Message(role = if (user) Role.USER else Role.ASSISTANT, text = text) }
         val buffer = StringBuilder()
         engineTurn.withLock {
-            engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
+            loadModel(manifest)
             val prepared = withContext(Dispatchers.Default) { prompts.prepare(messages, s.persona, false, system) } as? PreparedPrompt.Ready
                 ?: error("That was too long for the phone's context.")
             engine.generate(prepared.system, prepared.messages).collect { piece -> if (piece.isNotEmpty()) { buffer.append(piece); update(ToolCall.visible(buffer.toString())) } }
@@ -955,7 +969,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                 if (engineTurn.isLocked) updateRun(run.id) { it.copy(stage = "Waiting its turn") }
                 engineTurn.withLock {
                     updateRun(run.id) { it.copy(stage = "Thinking") }
-                    engine.load(downloader.file(manifest, manifest.weights).path, manifest.projector?.let { downloader.file(manifest, it).path })
+                    loadModel(manifest)
                     val prepared = withContext(Dispatchers.Default) { prompts.prepare(history, null, false, system) } as? PreparedPrompt.Ready
                         ?: error("The errand is too long for the phone's context.")
                     engine.generate(prepared.system, prepared.messages).collect { piece ->
