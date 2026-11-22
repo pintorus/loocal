@@ -24,7 +24,16 @@ class TurnTakingTest {
         assertTrue(TurnTaking.isInterruption("Lyon", echo, 1.0))
     }
 
-    @Test fun leadingEchoIsStripped() = assertEquals("what about Lyon", TurnTaking.strippingEcho("mild today what about Lyon", echo))
+    private val said = "The weather in Paris is mild today"
+
+    @Test fun leadingEchoIsStripped() = assertEquals("what about Lyon", TurnTaking.strippingEcho("mild today what about Lyon", said))
+
+    /** The start of your sentence is yours even when Loocal used the same little words. */
+    @Test fun commonWordsAreKept() {
+        assertEquals("is it raining in Lyon", TurnTaking.strippingEcho("is it raining in Lyon", said))
+        assertEquals("the train to Lyon", TurnTaking.strippingEcho("the train to Lyon", said))
+        assertEquals("what about Lyon", TurnTaking.strippingEcho("Paris what about Lyon", said))
+    }
 
     @Test fun firstClauseGoesEarly() {
         assertEquals(22, TurnTaking.firstClauseEnd("Sure, here's the plan, step by step"))

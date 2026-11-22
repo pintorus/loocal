@@ -190,6 +190,7 @@ class VoiceConversation(
     private fun startListening(barge: Boolean = false) {
         if (!running || _state.value.muted) return
         barging = barge
+        echoWords = 0
         if (!barge) _state.update { s ->
             val lines = if (s.lines.lastOrNull()?.fromUser != true || s.lines.last().text.isNotEmpty()) s.lines + Line(fromUser = true, text = "") else s.lines
             s.copy(phase = Phase.LISTENING, lines = lines.takeLast(8))
@@ -234,18 +235,44 @@ class VoiceConversation(
 
     private fun currentSaid() = _state.value.lines.lastOrNull()?.takeIf { it.fromUser }?.text?.trim().orEmpty()
 
-    /** Words Loocal is saying now: the mic may pick them up, and they're never you. */
-    private fun echo(): Set<String> = _state.value.lines.lastOrNull()?.takeIf { !it.fromUser }?.text?.let { TurnTaking.words(it).toSet() }.orEmpty()
+    /** What Loocal is saying now: the mic may pick it up, and it's never you. */
+    private fun spokenText(): String = _state.value.lines.lastOrNull()?.takeIf { !it.fromUser }?.text.orEmpty()
+    private fun echo(): Set<String> = TurnTaking.words(spokenText()).toSet()
+
+    /** Leading words of this listening session that were Loocal's echo, dropped from what you said. */
+    private var echoWords = 0
+    private fun yours(text: String) = text.split(Regex("\\s+")).filter { it.isNotEmpty() }.drop(echoWords).joinToString(" ")
 
     /** You spoke while Loocal thought or talked: duck at once, and take the floor once it's clearly you. */
     private fun heardOver(text: String, final: Boolean) {
         val echo = echo()
-        val mine = TurnTaking.strippingEcho(text, echo)
+        echoWords = TurnTaking.echoLength(text, spokenText())
+        val mine = yours(text)
         val novel = TurnTaking.words(mine).filter { it !in echo && it !in TurnTaking.backchannels }
         if (novel.isNotEmpty() && !ducked) { ducked = true; speaker.duck(true) }
         val talkingFor = (System.currentTimeMillis() - talkingSince) / 1000.0
         if (TurnTaking.isInterruption(mine, echo, talkingFor)) { interrupt(mine); return }
         if (final) { if (ducked) { ducked = false; speaker.duck(false) }; scope.launch { startListening(barge = true) } }
+    }
+
+    /**
+     * Loocal finished talking while the mic was open: the same listening session simply becomes
+     * your turn, so words you started a beat early aren't lost to a restart.
+     */
+    private fun handOver() {
+        barging = false
+        _state.update { s ->
+            val lines = if (s.lines.lastOrNull()?.fromUser != true || s.lines.last().text.isNotEmpty()) s.lines + Line(fromUser = true, text = "") else s.lines
+            s.copy(phase = Phase.LISTENING, lines = lines.takeLast(8))
+        }
+        lastHeard = System.currentTimeMillis()
+        silence?.cancel()
+        silence = scope.launch {
+            while (isActive) {
+                delay(200)
+                if (_state.value.phase == Phase.LISTENING && currentSaid().isNotEmpty() && System.currentTimeMillis() - lastHeard > END_OF_TURN_MS) endTurn()
+            }
+        }
     }
 
     /** Loocal stops; the reply keeps only what was heard, and your words start the next turn. */
@@ -275,8 +302,9 @@ class VoiceConversation(
         val text = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
         if (barging) { if (!text.isNullOrBlank()) heardOver(text, final) else if (final) scope.launch { startListening(barge = true) }; return }
         if (_state.value.phase != Phase.LISTENING) return
-        if (!text.isNullOrEmpty() && text != currentSaid()) {
-            _state.update { s -> s.copy(lines = s.lines.dropLast(1) + s.lines.last().copy(text = text)) }
+        val mine = text?.let(::yours)
+        if (!mine.isNullOrEmpty() && mine != currentSaid()) {
+            _state.update { s -> s.copy(lines = s.lines.dropLast(1) + s.lines.last().copy(text = mine)) }
             lastHeard = System.currentTimeMillis()
         }
         if (final) { if (currentSaid().isNotEmpty()) endTurn() else scope.launch { restartListening() } }
@@ -354,7 +382,12 @@ class VoiceConversation(
         speaker.speak(sentence)
     }
 
-    private fun resumeListening() { scope.launch { delay(250); if (ducked) { ducked = false; speaker.duck(false) }; startListening() } }
+    private fun resumeListening() {
+        if (ducked) { ducked = false; speaker.duck(false) }
+        // The mic was already open while Loocal talked: keep that session, it's your turn now.
+        if (barging && running && !_state.value.muted) { handOver(); return }
+        scope.launch { delay(250); startListening() }
+    }
 
     private fun append(line: Line) = _state.update { it.copy(lines = (it.lines + line).takeLast(8)) }
 

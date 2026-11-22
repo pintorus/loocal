@@ -25,12 +25,26 @@ object TurnTaking {
         "attends", "attend", "arrete", "non", "pardon", "mais", "ecoute", "chut", "basta", "para", "espera", "halt",
     )
 
-    /** Your words with any leading echo of what Loocal just said stripped off. */
-    fun strippingEcho(text: String, echo: Set<String>): String {
-        val raw = text.split(Regex("\\s+")).filter { it.isNotEmpty() }.toMutableList()
-        while (raw.isNotEmpty() && normalized(raw.first()) in echo) raw.removeAt(0)
-        return raw.joinToString(" ")
+    /**
+     * How many of your first words are an echo of what Loocal said: they must follow its words in
+     * order, so a lone "is" or "je" that it also happened to use is kept. A single echoed word
+     * counts only when it's a long one.
+     */
+    fun echoLength(text: String, spoken: String): Int {
+        val mine = words(text)
+        val said = words(spoken)
+        var best = 0
+        for (start in said.indices) {
+            var k = 0
+            while (k < mine.size && start + k < said.size && mine[k] == said[start + k]) k++
+            if (k > best) best = k
+        }
+        return if (best == 1 && mine[0].length < 5) 0 else best
     }
+
+    /** Your words with any leading echo of what Loocal just said stripped off. */
+    fun strippingEcho(text: String, spoken: String): String =
+        text.split(Regex("\\s+")).filter { it.isNotEmpty() }.drop(echoLength(text, spoken)).joinToString(" ")
 
     /** Whether what you said while Loocal was talking is you taking the floor. */
     fun isInterruption(text: String, echo: Set<String>, talkingFor: Double): Boolean {
