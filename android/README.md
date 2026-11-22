@@ -10,6 +10,13 @@ Chat rules match iOS (`app/src/main/java/app/loocal/domain/PromptBuilder.kt`): 2
 
 ## Build
 
+After cloning, fetch the submodule and the pinned sherpa-onnx library (Kokoro natural voices, 38 MB, hash-checked, not committed):
+
+```sh
+git submodule update --init
+sh scripts/fetch-sherpa-onnx.sh
+```
+
 Create `local.properties` with your SDK path (it is gitignored):
 
 ```

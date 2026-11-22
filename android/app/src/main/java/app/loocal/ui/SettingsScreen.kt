@@ -53,6 +53,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -150,6 +151,7 @@ private fun Home(state: UiState, vm: ChatViewModel, open: (SettingsPage) -> Unit
 }
 
 private fun voiceDetail(vm: ChatViewModel): String {
+    vm.speaker.selectedNeural?.let { return it.name + " · Natural" }
     val voices = vm.speaker.voices()
     val current = voices.firstOrNull { it.name == vm.speaker.selectedName } ?: voices.firstOrNull() ?: return "System voice"
     return voiceName(current) + " · " + app.loocal.voice.Speaker.label(current)
@@ -168,30 +170,74 @@ private fun VoicePage(vm: ChatViewModel) {
     var selected by remember { mutableStateOf(vm.speaker.selectedName) }
     var voices by remember { mutableStateOf(vm.speaker.voices()) }
     LaunchedEffect(Unit) { while (voices.isEmpty()) { kotlinx.coroutines.delay(300); voices = vm.speaker.voices() } }
-    val current = selected ?: voices.firstOrNull()?.name
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SectionLabel("Your voices")
-        Column(Modifier.fillMaxWidth().border(1.dp, ink.hairline, RoundedCornerShape(22.dp))) {
-            voices.take(12).forEachIndexed { i, voice ->
-                val isSelected = voice.name == current
-                val ring by animateDpAsState(if (isSelected) 5.5.dp else 1.5.dp, spring(dampingRatio = 0.7f, stiffness = 500f), label = "ring")
-                Row(
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth().height(52.dp).pressable(0.98f) {
-                        vm.speaker.selectedName = voice.name; selected = voice.name
-                        vm.speaker.say("Hi, this is how I’ll sound when we talk.", voice)
-                    }.padding(horizontal = 16.dp),
-                ) {
-                    Box(Modifier.size(18.dp).border(ring, if (isSelected) ink.primary else ink.hairline, CircleShape))
-                    Text(voiceName(voice), style = geist(15, FontWeight.Medium, ink.primary), maxLines = 1, modifier = Modifier.weight(1f))
-                    val label = app.loocal.voice.Speaker.label(voice)
-                    Text(label, style = geist(11, FontWeight.Medium, if (label == "Default") ink.secondary else ink.primary),
-                        modifier = Modifier.border(1.dp, ink.hairline, CircleShape).padding(horizontal = 7.dp, vertical = 2.dp))
-                }
-                if (i < minOf(voices.size, 12) - 1) Hairline(Modifier.padding(start = 46.dp))
+    val kokoro by vm.kokoroStatus.collectAsState()
+    val engineReady = vm.speaker.kokoro.isReady && !kokoro.isDownloading
+    val current = selected?.takeIf { !it.startsWith(app.loocal.voice.NeuralVoice.PREFIX) || engineReady } ?: voices.firstOrNull()?.name
+    val preview = "Hi, this is how I’ll sound when we talk."
+
+    @Composable
+    fun VoiceRow(id: String, name: String, tags: List<String>, onPick: () -> Unit) {
+        val isSelected = id == current
+        val ring by animateDpAsState(if (isSelected) 5.5.dp else 1.5.dp, spring(dampingRatio = 0.7f, stiffness = 500f), label = "ring$id")
+        Row(
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().height(52.dp).pressable(0.98f) { vm.speaker.selectedName = id; selected = id; onPick() }.padding(horizontal = 16.dp),
+        ) {
+            Box(Modifier.padding(end = 4.dp).size(18.dp).border(ring, if (isSelected) ink.primary else ink.hairline, CircleShape))
+            Text(name, style = geist(15, FontWeight.Medium, ink.primary), maxLines = 1, modifier = Modifier.weight(1f))
+            tags.forEach { tag ->
+                val strong = tag in setOf("Natural", "Premium", "Enhanced")
+                Text(tag, style = geist(11, FontWeight.Medium, if (strong) ink.primary else ink.secondary),
+                    modifier = Modifier.border(1.dp, ink.hairline, CircleShape).padding(horizontal = 7.dp, vertical = 2.dp))
             }
         }
-        Text("Tap a voice to hear it. More voices: Android Settings › System › Languages › Text-to-speech output.", style = geist(13, color = ink.tertiary), modifier = Modifier.padding(horizontal = 4.dp))
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(28.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            SectionLabel("Your voices")
+            Column(Modifier.fillMaxWidth().border(1.dp, ink.hairline, RoundedCornerShape(22.dp))) {
+                val rows = (if (engineReady) app.loocal.voice.NeuralVoice.CATALOG.map { v ->
+                    Triple(app.loocal.voice.NeuralVoice.PREFIX + v.id, v.name, listOf(if (v.female) "Female" else "Male", "Natural")) to { vm.speaker.stop(); vm.speaker.speakNeural(preview, v) }
+                } else emptyList()) + voices.take(8).map { v ->
+                    Triple(v.name, voiceName(v), listOf(app.loocal.voice.Speaker.label(v))) to { vm.speaker.say(preview, v) }
+                }
+                rows.forEachIndexed { i, (row, play) ->
+                    VoiceRow(row.first, row.second, row.third, play)
+                    if (i < rows.lastIndex) Hairline(Modifier.padding(start = 46.dp))
+                }
+            }
+            Text(if (engineReady) "Tap a voice to hear it. More system voices: Android Settings › System › Languages › Text-to-speech output."
+                 else "Android ships compact system voices. Download the natural voices below, or more system voices in Android Settings › System › Languages › Text-to-speech output.",
+                style = geist(13, color = ink.tertiary, lineHeight = 18.sp), modifier = Modifier.padding(horizontal = 4.dp))
+        }
+        if (!engineReady) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SectionLabel("Natural voices")
+                Column(Modifier.fillMaxWidth().border(1.dp, ink.hairline, RoundedCornerShape(22.dp)).padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("Kokoro · 11 voices", style = geist(16, FontWeight.Medium, ink.primary))
+                            Text("American and British English · 350 MB", style = geist(13, color = ink.secondary))
+                        }
+                        if (kokoro.isDownloading) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SpiralLoader(14.dp)
+                            Text("${((kokoro.progress ?: 0f) * 100).toInt()}%", style = geist(13, color = ink.secondary))
+                        } else Box(contentAlignment = Alignment.Center, modifier = Modifier.height(32.dp).background(ink.primary, CircleShape).pressable(0.92f, onClick = vm::downloadKokoro).padding(horizontal = 16.dp)) {
+                            Text(if (kokoro.error == null) "Get" else "Retry", style = geist(14, FontWeight.Medium, ink.paper))
+                        }
+                    }
+                    if (kokoro.isDownloading) {
+                        val p by animateFloatAsState(kokoro.progress ?: 0f, androidx.compose.animation.core.tween(600), label = "kokoro")
+                        Box(Modifier.fillMaxWidth().height(3.dp).background(ink.hairline, CircleShape)) { Box(Modifier.fillMaxWidth(p.coerceAtLeast(0.01f)).height(3.dp).background(ink.primary, CircleShape)) }
+                    }
+                    kokoro.error?.let { Text(it, style = geist(13, color = ink.secondary)) }
+                }
+                Text("Open-source Kokoro-82M (Apache 2.0), run on this phone through sherpa-onnx. English only.", style = geist(13, color = ink.tertiary), modifier = Modifier.padding(horizontal = 4.dp))
+            }
+        } else {
+            Text("Remove natural voices · frees 350 MB", style = geist(13, FontWeight.Medium, ink.secondary), modifier = Modifier.padding(horizontal = 4.dp).pressable { vm.deleteKokoro(); selected = vm.speaker.selectedName })
+        }
     }
 }
 

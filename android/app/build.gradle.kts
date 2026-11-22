@@ -66,6 +66,10 @@ dependencies {
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:language-id:17.0.6")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
+    // Kokoro natural voices: sherpa-onnx (Apache 2.0), fetched by scripts/fetch-sherpa-onnx.sh, and
+    // Commons Compress to unpack the voice engine archive.
+    implementation(files("libs/sherpa-onnx-static-link-onnxruntime-2.0.1.aar"))
+    implementation("org.apache.commons:commons-compress:1.28.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303") // the real org.json; Android's is a stub in JVM tests

@@ -46,7 +46,7 @@ Goal: the Android app is a faithful clone of the iOS app — same features, same
 | Conversation mode (Tide UI, 1.1 s pause, sentence-by-sentence speech) | `VoiceConversation.swift`, `ConversationView.swift` | on-device `SpeechRecognizer`, Compose port | ✅ built, not yet tried by voice on the phone |
 | Apple on-device model for voice | Foundation Models | ➖ not on Android: the selected local model answers (iOS already does this when Apple Intelligence is off) | ➖ |
 | System voices page with previews | `VoiceSettings.swift` | `TextToSpeech` voices | ✅ |
-| Natural voices (Kokoro-82M) | `NeuralVoices.swift` | sherpa-onnx Kokoro on Android | ⬜ |
+| Natural voices (Kokoro-82M) | `NeuralVoices.swift` | sherpa-onnx 2.0.1 with Kokoro v1.0 (same 11 voices); one 350 MB engine download holds every voice; faster than real time on a Xiaomi 14 | ✅ |
 
 ## Errands
 

@@ -49,6 +49,7 @@ import app.loocal.tools.RoutineAlarm
 import app.loocal.ReplyService
 import app.loocal.voice.Speaker
 import app.loocal.voice.VoiceConversation
+import app.loocal.voice.NeuralVoice
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -620,6 +621,26 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     // MARK: Voice
 
     fun readAloud(text: String) = speaker.say(text)
+
+    /** The Kokoro natural-voice engine: download progress, or an error. */
+    val kokoroStatus = MutableStateFlow(DownloadStatus())
+    private var kokoroJob: Job? = null
+
+    fun downloadKokoro() {
+        if (kokoroJob?.isActive == true) return
+        if (!onWifi()) { kokoroStatus.value = DownloadStatus(error = "Connect to Wi-Fi to download the voice engine."); return }
+        kokoroJob = viewModelScope.launch {
+            kokoroStatus.value = DownloadStatus(progress = 0f)
+            val result = runCatching { speaker.kokoro.download { p -> kokoroStatus.value = DownloadStatus(progress = p) } }
+            kokoroStatus.value = DownloadStatus(error = result.exceptionOrNull()?.takeIf { it !is kotlinx.coroutines.CancellationException }?.let { it.message ?: "The download stopped. Try again." })
+        }
+    }
+
+    fun deleteKokoro() {
+        speaker.stop(); speaker.kokoro.unload(); speaker.kokoro.delete()
+        if (speaker.selectedName?.startsWith(NeuralVoice.PREFIX) == true) speaker.selectedName = null
+        kokoroStatus.value = DownloadStatus()
+    }
 
     fun conversation() = VoiceConversation(app, speaker, ::voiceReply, ::recordVoiceTurn)
 

@@ -27,14 +27,21 @@ import kotlin.math.sin
  * The system voices (iOS `VoiceLibrary` + `Speaker`): picks the best installed voice by default,
  * remembers the one chosen in Settings › Voice, and reads text aloud sentence by sentence.
  */
-class Speaker(context: Context) {
+class Speaker(context: Context, val kokoro: KokoroEngine = KokoroEngine(context.filesDir)) {
     private val prefs = context.getSharedPreferences("voice", Context.MODE_PRIVATE)
     private val pending = AtomicInteger(0)
     private var ready = false
     private val queued = mutableListOf<String>()
     /** Called when the last queued sentence has been spoken. */
     var onIdle: (() -> Unit)? = null
-    val isIdle get() = pending.get() == 0
+    private val neural = NeuralSpeech(kokoro) { onIdle?.invoke() }
+    val isIdle get() = pending.get() == 0 && neural.isIdle
+
+    /** The natural voice chosen in Settings › Voice, if any and installed. */
+    val selectedNeural: NeuralVoice? get() = selectedName?.takeIf { it.startsWith(NeuralVoice.PREFIX) && kokoro.isReady }
+        ?.let { name -> NeuralVoice.CATALOG.firstOrNull { NeuralVoice.PREFIX + it.id == name } }
+
+    fun speakNeural(sentence: String, voice: NeuralVoice) = neural.speak(sentence, voice)
 
     private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { status ->
         ready = status == TextToSpeech.SUCCESS
@@ -66,6 +73,7 @@ class Speaker(context: Context) {
     }
 
     fun speak(sentence: String, voice: Voice? = null) {
+        if (voice == null) selectedNeural?.let { neural.speak(sentence, it); return }
         if (!ready) { queued.add(sentence); return }
         voice?.let { tts.voice = it }
         pending.incrementAndGet()
@@ -79,12 +87,16 @@ class Speaker(context: Context) {
         if (voice != null) applyVoice()
     }
 
-    fun stop() { pending.set(0); tts.stop() }
+    fun stop() { pending.set(0); tts.stop(); neural.stop() }
 
     /** A gentle level while talking, for the Tide; the system engine exposes no audio level. */
-    fun level(seconds: Double): Double = if (isIdle) 0.05 else 0.35 + 0.25 * sin(seconds * 9) * sin(seconds * 2.3)
+    fun level(seconds: Double): Double = when {
+        isIdle -> 0.05
+        selectedNeural != null -> maxOf(0.05, neural.level())
+        else -> 0.35 + 0.25 * sin(seconds * 9) * sin(seconds * 2.3)
+    }
 
-    fun shutdown() = tts.shutdown()
+    fun shutdown() { tts.shutdown(); neural.release(); kokoro.unload() }
 
     companion object {
         /** Speech-friendly sentences: split on . ! ? … and line breaks, markdown symbols removed. */
