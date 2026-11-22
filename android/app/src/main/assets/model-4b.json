@@ -1,0 +1,13 @@
+{
+  "id": "qwen3-4b-instruct-2507-q4_0",
+  "name": "Qwen3 4B",
+  "repository": "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+  "revision": "ae44f08e1392f39c0e474af10c3ff8355c8b6688",
+  "files": [
+    {
+      "path": "Qwen_Qwen3-4B-Instruct-2507-Q4_0.gguf",
+      "size": 2375772896,
+      "sha256": "b2198e1e35b98e2e126a00d9e853a53bc3a4bcca5f82cfbf2a03b38a91f2662c"
+    }
+  ]
+}
