@@ -200,6 +200,7 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
     var pill by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     var screenTop by remember { mutableStateOf(Offset.Zero) }
     var wasPainting by remember { mutableStateOf(state.isPainting) }
+    val painting by androidx.compose.runtime.rememberUpdatedState(state.isPainting)
     LaunchedEffect(state.isPainting) {
         if (state.isPainting && !wasPainting && canPour) pour = true else painterPage = state.isPainting
         wasPainting = state.isPainting
@@ -274,7 +275,7 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
         // The pill's place, from the window into this screen.
         PaintPour(
             origin = pill.center - screenTop, pill = pill.size,
-            covered = { painterPage = state.isPainting }, finished = { pour = false },
+            covered = { painterPage = painting }, finished = { pour = false; painterPage = painting },
         )
     }
     }

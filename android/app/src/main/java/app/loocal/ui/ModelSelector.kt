@@ -92,6 +92,16 @@ fun ModelSelector(
     val currentIndex by rememberUpdatedState(index)
     val currentExpanded by rememberUpdatedState(expanded)
 
+    // Crossing the brush takes half a slot more drag than moving between neighbours.
+    fun acrossBrush(start: Float, raw: Float): Float {
+        val gap = (firstPicture ?: return raw) - 0.5f
+        return when {
+            start < gap && raw > gap -> maxOf(gap, raw - 0.5f)
+            start > gap && raw < gap -> minOf(gap, raw + 0.5f)
+            else -> raw
+        }
+    }
+
     fun rubberBand(value: Float): Float {
         val upper = (options.size - 1).toFloat()
         return when {
@@ -134,7 +144,7 @@ fun ModelSelector(
                         lastX = change.position.x
                         if (abs(dx) > 2 * density.density) {
                             moved = moved || abs(dx) > 4 * density.density
-                            val value = rubberBand(start - dx / slotPx)
+                            val value = rubberBand(acrossBrush(start, start - dx / slotPx))
                             scope.launch { live.snapTo(value) }
                             val nearest = value.roundToInt()
                             if (nearest in options.indices && nearest != currentIndex) {
@@ -147,17 +157,16 @@ fun ModelSelector(
                     }
                     dragging = false
                     val target: Int? = when {
-                        moved -> (start - (lastX - down.position.x + tracker.calculateVelocity().x * 0.25f) / slotPx).roundToInt()
+                        moved -> acrossBrush(start, start - (lastX - down.position.x + tracker.calculateVelocity().x * 0.25f) / slotPx).roundToInt()
                         openedByTap -> null // a plain tap just opens the carousel
                         else -> (live.value + (lastX - size.width / 2f) / slotPx).roundToInt() // tap on a neighbour picks it
                     }
                     if (target != null) {
                         var t = target.coerceIn(0, options.size - 1)
                         // Crossing the brush takes a longer drag than moving between neighbours; a fling never jumps it.
-                        if (firstPicture != null && moved && (start.toInt() < firstPicture) != (t < firstPicture)) {
-                            val dragged = abs(lastX - down.position.x) / slotPx
-                            val across = if (start.toInt() < firstPicture) firstPicture else firstPicture - 1
-                            t = if (dragged > abs(across - start) + 0.6f) across else if (start.toInt() < firstPicture) firstPicture - 1 else firstPicture
+                        if (firstPicture != null && moved) {
+                            val held = live.value.roundToInt()
+                            if ((held < firstPicture) != (t < firstPicture)) t = if (held < firstPicture) firstPicture - 1 else firstPicture
                         }
                         select(options[t].id)
                         scope.launch { live.animateTo(t.toFloat(), spring(dampingRatio = 0.82f, stiffness = 300f)) }

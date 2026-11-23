@@ -705,7 +705,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val info = PaintInfo(prompt, Painter.SIDE, Painter.SIDE, model.name)
         _state.update { it.copy(draft = "", draftIslands = emptyList(), photo = null, files = emptyList(), chat = it.chat.appending(Message(role = Role.USER, text = prompt))) }
         persist()
-        _state.update { it.copy(writing = it.writing + (chatId to Writing(replyId, paint = info, phase = "Waiting its turn")), performance = "", error = null) }
+        _state.update { it.copy(writing = it.writing + (chatId to Writing(replyId, paint = info, phase = "Waiting its turn", paintTotal = Painter.settings(model.id).first)), performance = "", error = null) }
         jobs[chatId] = viewModelScope.launch {
             var name: String? = null
             var stopped = false
