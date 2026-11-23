@@ -10,6 +10,10 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
@@ -58,7 +62,11 @@ import kotlin.math.roundToInt
  * A tap opens it; tapping a neighbour picks it; left alone it closes after 2.5 s.
  */
 @Composable
-fun ModelSelector(options: List<ModelManifest>, selection: String, select: (String) -> Unit, disabled: Boolean, dimmed: Boolean) {
+fun ModelSelector(
+    options: List<ModelManifest>, selection: String, select: (String) -> Unit, disabled: Boolean, dimmed: Boolean,
+    /** Where the capsule sits on screen (window px), for the paint poured out of it. */
+    placed: (androidx.compose.ui.geometry.Rect) -> Unit = {},
+) {
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
@@ -67,6 +75,11 @@ fun ModelSelector(options: List<ModelManifest>, selection: String, select: (Stri
     val index = options.indexOfFirst { it.id == selection }.coerceAtLeast(0)
     val nameStyle = geist(15, FontWeight.Medium)
     val collapsed = with(density) { measurer.measure(options[index].name, nameStyle).size.width.toDp() } + 34.dp
+    // Picture models sit past the chat models on the far right, across a gap marked by a brush.
+    val firstPicture = options.indexOfFirst { it.paints }.takeIf { it > 0 }
+    val painted = options[index].paints
+    val paint = liquidPaintBrush()
+    LaunchedEffect(painted) { if (painted) haptics.performHapticFeedback(HapticFeedbackType.LongPress) }
 
     var expanded by remember { mutableStateOf(false) }
     var dragging by remember { mutableStateOf(false) }
@@ -94,11 +107,12 @@ fun ModelSelector(options: List<ModelManifest>, selection: String, select: (Stri
             .width(width).height(38.dp)
             .graphicsLayer { val s = if (dragging) 1.02f else 1f; scaleX = s; scaleY = s }
             .shadow(if (expanded) 12.dp else 0.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.08f), spotColor = Color.Black.copy(alpha = 0.08f))
-            .background(ink.fill, CircleShape)
-            .border(1.dp, if (expanded) ink.hairline else Color.Transparent, CircleShape)
+            .onGloballyPositioned { placed(it.boundsInWindow()) }
+            .then(if (painted) Modifier.background(paint, CircleShape) else Modifier.background(ink.fill, CircleShape))
+            .border(1.dp, if (expanded && !painted) ink.hairline else Color.Transparent, CircleShape)
             .clip(CircleShape)
             .alpha(if (disabled) 0.5f else 1f)
-            .semantics { contentDescription = "Model"; stateDescription = options[index].name }
+            .semantics { contentDescription = "Model"; stateDescription = options[index].name + if (painted) ", paints pictures" else "" }
             .pointerInput(disabled, options.size) {
                 if (disabled) return@pointerInput
                 val slotPx = slot.toPx()
@@ -138,7 +152,13 @@ fun ModelSelector(options: List<ModelManifest>, selection: String, select: (Stri
                         else -> (live.value + (lastX - size.width / 2f) / slotPx).roundToInt() // tap on a neighbour picks it
                     }
                     if (target != null) {
-                        val t = target.coerceIn(0, options.size - 1)
+                        var t = target.coerceIn(0, options.size - 1)
+                        // Crossing the brush takes a longer drag than moving between neighbours; a fling never jumps it.
+                        if (firstPicture != null && moved && (start.toInt() < firstPicture) != (t < firstPicture)) {
+                            val dragged = abs(lastX - down.position.x) / slotPx
+                            val across = if (start.toInt() < firstPicture) firstPicture else firstPicture - 1
+                            t = if (dragged > abs(across - start) + 0.6f) across else if (start.toInt() < firstPicture) firstPicture - 1 else firstPicture
+                        }
                         select(options[t].id)
                         scope.launch { live.animateTo(t.toFloat(), spring(dampingRatio = 0.82f, stiffness = 300f)) }
                         expanded = false
@@ -157,13 +177,24 @@ fun ModelSelector(options: List<ModelManifest>, selection: String, select: (Stri
                 }
             },
     ) {
+        firstPicture?.let { gap ->
+            androidx.compose.material3.Icon(
+                androidx.compose.material.icons.Icons.Filled.Brush, "Pictures past here",
+                tint = if (painted) Color.White else Color(0xFFF21F9E),
+                modifier = androidx.compose.ui.Modifier.size(14.dp).graphicsLayer {
+                    translationX = (gap - 0.5f - live.value) * slot.toPx()
+                    alpha = if (expanded) maxOf(0f, 1 - abs(gap - 0.5f - live.value) * 0.42f) else 0f
+                },
+            )
+        }
         options.forEachIndexed { i, option ->
             val distance = abs(i - live.value)
             val alpha by animateFloatAsState(if (expanded) maxOf(0f, 1 - distance * 0.42f) else if (distance < 0.5f) 1f else 0f, label = "alpha$i")
             Text(
                 option.name,
                 maxLines = 1, softWrap = false,
-                style = geist(15, if (distance < 0.5f) FontWeight.Medium else FontWeight.Normal, if (distance < 0.5f) (if (dimmed) ink.secondary else ink.primary) else ink.tertiary),
+                style = geist(15, if (distance < 0.5f) FontWeight.Medium else FontWeight.Normal,
+                    if (painted) Color.White.copy(alpha = if (distance < 0.5f) 1f else 0.72f) else if (distance < 0.5f) (if (dimmed) ink.secondary else ink.primary) else ink.tertiary),
                 modifier = Modifier.graphicsLayer {
                     translationX = (i - live.value) * slot.toPx()
                     val s = 1 - minOf(distance, 2f) * 0.07f

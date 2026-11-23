@@ -52,3 +52,15 @@ class ModelDownloadTest {
         assertFalse(File(target.path + ".inplace").exists() || File(target.path + ".piece0").exists())
     }
 }
+
+class SharedFolderTest {
+    @Test fun aSharedModelSurvivesTheSweep() {
+        val dir = java.nio.file.Files.createTempDirectory("models").toFile()
+        val d = ModelDownloader(dir)
+        val m = ModelManifest("hf.owner/name", "N", repository = "owner/name", revision = "", files = emptyList())
+        d.folder(m).mkdirs()
+        d.sweep(listOf(m))
+        org.junit.Assert.assertTrue(d.folder(m).exists())
+        org.junit.Assert.assertEquals("hf.owner--name", d.folder(m).name)
+    }
+}

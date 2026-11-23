@@ -39,6 +39,13 @@ class PhotoStore(root: File) {
         return Stored(name, mw, mh)
     }
 
+    /** Saves a painted picture as PNG; returns its name. */
+    fun savePainting(bitmap: Bitmap, temporaryChat: Boolean): String {
+        val name = UUID.randomUUID().toString() + ".png"
+        File(if (temporaryChat) temporary else saved, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        return name
+    }
+
     /** RGB bytes at the size the model reads (row-major, 3 bytes per pixel). */
     fun rgb(name: String, width: Int, height: Int): ByteArray {
         val decoded = BitmapFactory.decodeFile(file(name).path) ?: error("The photo is missing.")

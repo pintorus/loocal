@@ -39,7 +39,7 @@ object ModelLibrary {
     }
 
     /** Smallest first; equal sizes by name. Also the carousel's left-to-right order. */
-    fun ordered(models: List<ModelManifest>) = models.sortedWith(compareBy<ModelManifest> { it.parameters }.thenBy { it.name.lowercase() })
+    fun ordered(models: List<ModelManifest>) = models.sortedWith(compareBy<ModelManifest> { it.paints }.thenBy { it.parameters }.thenBy { it.name.lowercase() })
 
     // Links
 
@@ -103,11 +103,14 @@ object ModelLibrary {
             Sibling(s.string("rfilename") ?: "", (lfs?.get("size") as? JsonPrimitive)?.longOrNull ?: (s["size"] as? JsonPrimitive)?.longOrNull, lfs?.string("sha256"))
         }
         val image = info.string("pipeline_tag") in setOf("text-to-image", "image-to-image") || info.string("library_name") == "diffusers" || "diffusers" in tags
-        if (image) throw LibraryError("$id makes pictures. Loocal on Android runs chat models only for now.")
+        if (image) return picture(id, revision, siblings)
         val (weights, projector) = wanted(siblings)
             ?: throw LibraryError(if (siblings.any { it.name.endsWith(".safetensors") }) "$id has no GGUF weights. Loocal on Android runs GGUF models: look for a GGUF copy, such as one from bartowski or unsloth." else "$id has no GGUF weights Loocal can run.")
         val url = "https://huggingface.co/$id/resolve/$revision/${weights.name}"
-        val architecture = runCatching { architecture(url) }.getOrNull()
+        val header = runCatching { header(url) }.getOrNull() ?: throw LibraryError("Loocal couldn’t read $id from Hugging Face. Try again in a moment.")
+        // Stable Diffusion GGUFs (for stable-diffusion.cpp) have no architecture key, just its tensors.
+        if (isPicture(header)) return picture(id, revision, siblings)
+        val architecture = ggufArchitecture(header)
             ?: throw LibraryError("Loocal couldn’t tell what kind of model $id is.")
         if (architecture !in ARCHITECTURES) throw LibraryError("Loocal can’t run $architecture models yet.")
         val owner = id.substringBefore('/')
@@ -122,14 +125,44 @@ object ModelLibrary {
         )
     }
 
-    /** `general.architecture` from the start of a GGUF file, read with a range request. */
-    fun architecture(url: String): String? {
+    /**
+     * A picture model: stable-diffusion.cpp paints from one checkpoint file (GGUF or safetensors)
+     * holding the UNet, text encoder and decoder together, so a diffusers folder alone won't do.
+     */
+    private fun picture(id: String, revision: String, siblings: List<Sibling>): ModelManifest {
+        val file = wantedPicture(siblings)
+            ?: throw LibraryError("Loocal paints from a single Stable Diffusion checkpoint, like stabilityai/sd-turbo. $id has none: look for a GGUF or single-file copy.")
+        return ModelManifest(
+            id = "hf." + id.lowercase(), name = shortName(id), detail = id.substringBefore('/') + " · pictures",
+            repository = id, revision = revision, files = listOf(ModelFile(file.name, file.size!!, file.sha256!!)),
+            parameters = 1000.0, custom = true, kind = ModelManifest.PICTURE,
+        )
+    }
+
+    /** The checkpoint to paint with: a root-level GGUF (Q8_0, then smaller), else a half-precision single-file safetensors. */
+    fun wantedPicture(siblings: List<Sibling>): Sibling? {
+        val root = siblings.filter { "/" !in it.name && it.size != null && it.sha256 != null }
+        val gguf = root.filter { it.name.endsWith(".gguf", true) && !it.name.contains("vae", true) }
+        listOf("Q8_0", "F16", "Q5_0", "Q4_1", "Q4_0").forEach { q -> gguf.firstOrNull { it.name.uppercase().contains(q) }?.let { return it } }
+        gguf.minByOrNull { it.size!! }?.let { return it }
+        val single = root.filter { it.name.endsWith(".safetensors", true) && !it.name.contains("ema", true) }
+        return single.firstOrNull { it.name.contains("fp16", true) || it.name.contains("f16", true) } ?: single.minByOrNull { it.size!! }
+    }
+
+    /** A GGUF holding a Stable Diffusion checkpoint rather than a language model. */
+    fun isPicture(header: ByteArray): Boolean {
+        if (ggufArchitecture(header) != null) return false
+        val text = String(header, Charsets.ISO_8859_1)
+        return "model.diffusion_model." in text || "first_stage_model." in text
+    }
+
+    /** The start of a GGUF file (its metadata and tensor names), read with a range request. */
+    fun header(url: String): ByteArray {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = true; connectTimeout = 20_000; readTimeout = 30_000
             setRequestProperty("Range", "bytes=0-${HEADER - 1}")
         }
-        val bytes = connection.inputStream.use { it.readNBytesCompat(HEADER) }
-        return ggufArchitecture(bytes)
+        return connection.inputStream.use { it.readNBytesCompat(HEADER) }
     }
 
     /** Reads metadata keys from a GGUF header until `general.architecture`. */
@@ -184,7 +217,7 @@ object ModelLibrary {
 
     /** Whether a model's files likely need more memory than this phone has. */
     fun mayNotFit(model: ModelManifest, totalMemory: Long): Boolean =
-        totalMemory > 0 && model.totalBytes + 700L * 1024 * 1024 > totalMemory * 6 / 10
+        totalMemory > 0 && model.totalBytes + (if (model.paints) 1500L * 1024 * 1024 else 0L) + 700L * 1024 * 1024 > totalMemory * 6 / 10
 
     private const val HEADER = 4 * 1024 * 1024
 

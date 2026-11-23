@@ -40,6 +40,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.animation.animateContentSize
 import androidx.compose.ui.draw.clip
@@ -352,17 +353,31 @@ private fun ModelsPage(state: UiState, vm: ChatViewModel) {
     androidx.compose.runtime.LaunchedEffect(state.revealedModel) {
         if (state.revealedModel != null) { kotlinx.coroutines.delay(2500); vm.revealed() }
     }
+    val chat = state.models.filter { !it.paints }
+    val pictures = state.models.filter { it.paints }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ModelCard(state, vm, chat, state.addingModel)
+        Text("Models download once, then run offline on this phone. Smaller ones answer faster. Long-press a downloaded model to remove it. To add one, share its Hugging Face page to Loocal.", style = geist(13, color = ink.tertiary), modifier = Modifier.padding(horizontal = 4.dp))
+        if (pictures.isNotEmpty()) {
+            Text("PICTURES", style = geist(12, FontWeight.Medium, ink.tertiary), modifier = Modifier.padding(start = 4.dp, top = 14.dp))
+            ModelCard(state, vm, pictures, null)
+            Text("Pick a picture model in the chat’s model selector, past the brush, to paint instead of answering.", style = geist(13, color = ink.tertiary), modifier = Modifier.padding(horizontal = 4.dp))
+        }
+    }
+}
+
+@Composable
+private fun ModelCard(state: UiState, vm: ChatViewModel, models: List<app.loocal.inference.ModelManifest>, adding: String?) {
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).border(1.dp, ink.hairline, RoundedCornerShape(22.dp)).animateContentSize()) {
-            state.models.forEachIndexed { i, model ->
+            models.forEachIndexed { i, model ->
                 androidx.compose.runtime.key(model.id) {
                     SwipeToRemove(enabled = model.custom, remove = { vm.removeModel(model.id) }) {
                         ModelRow(state, model, vm, revealed = state.revealedModel == model.id)
                     }
                 }
-                if (i < state.models.lastIndex || state.addingModel != null) Hairline(Modifier.padding(start = 20.dp))
+                if (i < models.lastIndex || adding != null) Hairline(Modifier.padding(start = 20.dp))
             }
-            state.addingModel?.let { adding ->
+            adding?.let { adding ->
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
                     SpiralLoader(16.dp)
                     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -372,8 +387,6 @@ private fun ModelsPage(state: UiState, vm: ChatViewModel) {
                 }
             }
         }
-        Text("Models download once, then run offline on this phone. Smaller ones answer faster. Long-press a downloaded model to remove it. To add one, share its Hugging Face page to Loocal.", style = geist(13, color = ink.tertiary), modifier = Modifier.padding(horizontal = 4.dp))
-    }
 }
 
 /** Swipe a shared model left to remove it, like a chat in History. */
@@ -397,7 +410,7 @@ private fun SwipeToRemove(enabled: Boolean, remove: () -> Unit, content: @Compos
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun ModelRow(state: UiState, model: app.loocal.inference.ModelManifest, vm: ChatViewModel, revealed: Boolean = false) {
-    val selected = state.modelId == model.id
+    val selected = state.carouselId == model.id
     val ready = model.id in state.ready
     val download = state.downloads[model.id] ?: DownloadStatus()
     val size = android.text.format.Formatter.formatShortFileSize(LocalContext.current, model.totalBytes)
@@ -414,7 +427,8 @@ private fun ModelRow(state: UiState, model: app.loocal.inference.ModelManifest, 
                     onClick = { vm.chooseModel(model.id) }, onLongClick = { if (ready) confirmDelete = true },
                 ),
             ) {
-                Box(Modifier.size(18.dp).border(ring, if (selected) ink.primary else ink.hairline, CircleShape))
+                if (model.paints) Icon(Icons.Filled.Brush, null, tint = if (selected) ink.primary else ink.secondary, modifier = Modifier.size(18.dp))
+                else Box(Modifier.size(18.dp).border(ring, if (selected) ink.primary else ink.hairline, CircleShape))
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(model.name, style = geist(16, FontWeight.Medium, ink.primary), maxLines = 1)

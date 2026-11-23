@@ -37,7 +37,7 @@ class PromptBuilder(
         var recent = history.takeLast(Limits.RECENT_MESSAGES).dropLeadingReplies()
         fun slot(list: List<Message>): PhotoSlot? {
             if (!vision) return null
-            val i = list.indexOfLast { it.imageName != null && it.imageWidth > 0 }
+            val i = list.indexOfLast { it.imageName != null && it.imageWidth > 0 && it.paint == null }
             return if (i < 0) null else PhotoSlot(i, list[i].imageWidth, list[i].imageHeight)
         }
         while (countTokens(system, recent, slot(recent)) > Limits.MAX_INPUT_TOKENS && recent.size > 1) {

@@ -25,12 +25,14 @@ data class Message(
     val tools: List<app.loocal.tools.ToolUse> = emptyList(),
     /** Tools, connectors and attachments placed in the prompt as islands (markers in [text]). */
     val islands: List<Island> = emptyList(),
+    /** A picture painted as this reply: what was asked; the picture itself is [imageName]. */
+    val paint: app.loocal.inference.PaintInfo? = null,
 ) {
     /** The prompt as a person reads it (titles, copy, edit, History). */
     val readable get() = IslandText.titled(text, islands)
 
     /** What the model reads for this message: attached file text, then the message, islands by name. */
-    val modelText get() = IslandText.spoken(text, islands).let { spoken -> context?.let { it + "\n\n" + spoken } ?: spoken }
+    val modelText get() = if (paint != null) "[Painted a picture of: ${paint.prompt}]" else IslandText.spoken(text, islands).let { spoken -> context?.let { it + "\n\n" + spoken } ?: spoken }
 }
 
 

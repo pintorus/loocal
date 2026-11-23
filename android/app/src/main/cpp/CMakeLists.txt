@@ -30,7 +30,20 @@ endif()
 set(LLAMA_BUILD_MTMD ON CACHE BOOL "" FORCE)
 set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
 
+# Stable Diffusion checkpoints have tensor names past ggml's default 64 characters (sd.cpp's own
+# ggml is patched to 128). Set for everything, so llama.cpp and sd.cpp agree on ggml_tensor's layout.
+add_compile_definitions(GGML_MAX_NAME=128)
 add_subdirectory(llama.cpp build-llama)
 
-add_library(loocal_llama SHARED loocal_llama.cpp)
-target_link_libraries(loocal_llama PRIVATE llama mtmd android log)
+# Painting (Stable Diffusion) with stable-diffusion.cpp, built on llama.cpp's own ggml so the two
+# share one copy of it in libloocal_llama.so.
+set(SD_USE_UPSTREAM_GGML ON CACHE BOOL "" FORCE)
+set(SD_GGML_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml" CACHE PATH "" FORCE)
+set(SD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SD_WEBP OFF CACHE BOOL "" FORCE)
+set(SD_WEBM OFF CACHE BOOL "" FORCE)
+set(SD_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+add_subdirectory(stable-diffusion.cpp build-sd)
+
+add_library(loocal_llama SHARED loocal_llama.cpp loocal_sd.cpp)
+target_link_libraries(loocal_llama PRIVATE llama mtmd stable-diffusion android log)

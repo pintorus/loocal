@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Only the camera's scratch file is shared, with the system camera app. -->
+<!-- The camera's scratch file (with the system camera app), and a painted picture you chose to share. -->
 <paths>
     <cache-path name="camera" path="camera/" />
+    <cache-path name="share" path="share/" />
 </paths>

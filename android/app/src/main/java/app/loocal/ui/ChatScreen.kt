@@ -81,6 +81,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
@@ -191,6 +194,17 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
         }
     }
 
+    // Paint mode: the empty chat turns into the painter's page, under the pour when there is one.
+    var painterPage by remember { mutableStateOf(state.isPainting) }
+    var pour by remember { mutableStateOf(false) }
+    var pill by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    var screenTop by remember { mutableStateOf(Offset.Zero) }
+    var wasPainting by remember { mutableStateOf(state.isPainting) }
+    LaunchedEffect(state.isPainting) {
+        if (state.isPainting && !wasPainting && canPour) pour = true else painterPage = state.isPainting
+        wasPainting = state.isPainting
+    }
+    Box(Modifier.fillMaxSize().onGloballyPositioned { screenTop = it.positionInWindow() }) {
     Column(Modifier.fillMaxSize().background(ink.paper)) {
         // Model pill, with the temporary-chat note hanging under it.
         Box(
@@ -198,7 +212,7 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp)
                 .pointerInput(Unit) { detectTapGestures { focus.clearFocus() } },
         ) {
-            ModelSelector(state.models, state.modelId, vm::chooseModel, disabled = state.anyWork, dimmed = !state.modelReady)
+            ModelSelector(state.models, state.carouselId, vm::chooseModel, disabled = state.anyWork, dimmed = !state.modelReady, placed = { pill = it })
             androidx.compose.animation.AnimatedVisibility(
                 state.isTemporary,
                 enter = fadeIn() + slideInVertically { -it / 2 }, exit = fadeOut() + slideOutVertically { -it / 2 },
@@ -220,7 +234,9 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
                 transitionSpec = { (fadeIn(tween(300)) + scaleIn(initialScale = 0.98f)) togetherWith fadeOut(tween(200)) },
                 label = "empty",
             ) { empty ->
-                if (empty) {
+                if (empty && painterPage) {
+                    PainterPage(bottomInset = with(density) { composerHeight.toDp() })
+                } else if (empty) {
                     EmptyChat(temporary = state.isTemporary, toggle = vm::toggleTemporary, bottomInset = with(density) { composerHeight.toDp() })
                 } else {
                     Transcript(
@@ -239,7 +255,7 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
                     .bottomFade(),
             ) {
                 AnimatedVisibility(
-                    state.chat.messages.isEmpty() && state.modelReady && state.draft.isEmpty() && !state.isBusy,
+                    state.chat.messages.isEmpty() && state.modelReady && state.draft.isEmpty() && !state.isBusy && !state.isPainting,
                     enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it },
                 ) { Suggestions { vm.setDraft(it); composerFocus.requestFocus() } }
                 Composer(
@@ -252,6 +268,15 @@ fun ChatScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, open
                 )
             }
         }
+    }
+
+    if (pour) {
+        // The pill's place, from the window into this screen.
+        PaintPour(
+            origin = pill.center - screenTop, pill = pill.size,
+            covered = { painterPage = state.isPainting }, finished = { pour = false },
+        )
+    }
     }
 
     selecting?.let { message -> SelectTextSheet(message.text) { selecting = null } }
@@ -387,7 +412,12 @@ private fun Transcript(
                 modifier = Modifier.heightIn(min = (viewport - 32.dp).coerceAtLeast(0.dp)).onPlaced { turnTop = it.positionInParent().y.toInt() },
             ) {
                 messages.drop(split).forEach { MessageRow(it, state, vm, held, setHeld, edit, select) }
-                if (state.generatingId != null) {
+                if (state.generatingId != null && state.paintingNow != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        PaintCanvas(state.generatingId!!, state.paintDone, state.paintTotal, image = null, fresh = true)
+                        Text(state.phase, style = geist(13, color = ink.secondary), modifier = Modifier.shimmer())
+                    }
+                } else if (state.generatingId != null) {
                     AssistantMessage(Message(id = state.generatingId!!, role = Role.ASSISTANT, text = state.streaming, tools = state.streamingTools), generating = true, interrupted = false, phase = state.phase, undo = vm::undoAction)
                 }
                 if (!state.isBusy && state.performance.isNotEmpty()) {
@@ -419,7 +449,8 @@ private fun MessageRow(
                     )
                 },
         ) {
-            if (isUser) UserMessage(message, vm::photoFile) else AssistantMessage(message, generating = false, interrupted = message.id in state.interrupted, undo = vm::undoAction, speak = vm::readAloud)
+            if (!isUser && message.paint != null && message.imageName != null) PaintCanvas(message.id, 1, 1, vm.photoFile(message.imageName), fresh = state.freshPainting == message.id)
+            else if (isUser) UserMessage(message, vm::photoFile) else AssistantMessage(message, generating = false, interrupted = message.id in state.interrupted, undo = vm::undoAction, speak = vm::readAloud)
         }
         AnimatedVisibility(
             isHeld,
@@ -506,6 +537,18 @@ private fun Actions(message: Message, state: UiState, vm: ChatViewModel, done: (
             .shadow(14.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.1f), spotColor = Color.Black.copy(alpha = 0.1f))
             .background(ink.paper, CircleShape).border(1.dp, ink.hairline, CircleShape).padding(4.dp),
     ) {
+        val picture = message.paint?.let { message.imageName }?.let(vm::photoFile)
+        if (picture != null) {
+            Action("Share", Icons.Outlined.IosShare) {
+                val copy = java.io.File(context.cacheDir, "share").apply { mkdirs() }.resolve("Loocal painting.png")
+                picture.copyTo(copy, overwrite = true)
+                val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".files", copy)
+                context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), null))
+                done()
+            }
+            Action("Save to Photos", Icons.Outlined.ArrowDownward) { vm.savePaintingToPhotos(picture); done() }
+            return@Row
+        }
         Action("Copy", Icons.Outlined.ContentCopy) {
             // Marked sensitive: Android keeps it out of clipboard previews and cross-device sync.
             val clip = ClipData.newPlainText("Loocal", plain).apply {
@@ -629,6 +672,7 @@ private fun Composer(
                                 personas = state.personas, activeId = state.personaId, canSend = state.canSend,
                                 open = personaOpen, setOpen = { if (it) focus.clearFocus(); setPersonaOpen(it) },
                                 send = { focus.clearFocus(); sendNow() }, choose = vm::choosePersona, addPersona = openPersonas,
+                                brush = state.isPainting,
                             )
                         }
                     }
@@ -642,8 +686,8 @@ private fun Composer(
 @Composable
 fun DownloadComposer(state: UiState, start: () -> Unit) {
     val downloading = state.download.isDownloading
-    val size = android.text.format.Formatter.formatShortFileSize(LocalContext.current, state.model.totalBytes)
-    val name = state.model.name
+    val size = android.text.format.Formatter.formatShortFileSize(LocalContext.current, state.composerModel.totalBytes)
+    val name = state.composerModel.name
     Column(
         verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier.fillMaxWidth().pressable(0.98f, enabled = !downloading, onClick = start),

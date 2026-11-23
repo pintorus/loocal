@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -70,6 +71,8 @@ fun SendControl(
     send: () -> Unit,
     choose: (String?) -> Unit,
     addPersona: () -> Unit,
+    /** Paint mode: the send button carries a brush. */
+    brush: Boolean = false,
 ) {
     val haptics = LocalHapticFeedback.current
     val density = LocalDensity.current
@@ -202,7 +205,7 @@ fun SendControl(
                 .background(if (open) ink.fill else if (canSend) ink.primary else ink.hairline, CircleShape),
         ) {
             Icon(
-                if (open) Icons.Filled.Close else Icons.Filled.ArrowUpward, null,
+                if (open) Icons.Filled.Close else if (brush) Icons.Filled.Brush else Icons.Filled.ArrowUpward, null,
                 tint = if (open) ink.secondary else if (canSend) ink.paper else ink.tertiary,
                 modifier = Modifier.size(if (open) 15.dp else 19.dp),
             )

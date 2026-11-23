@@ -32,14 +32,18 @@ data class ModelManifest(
     val parameters: Double = 0.0,
     /** Shared from Hugging Face, so it can be removed again. */
     val custom: Boolean = false,
+    /** "picture" for Stable Diffusion models, which paint instead of chatting. */
+    val kind: String = "chat",
 ) {
+    val paints get() = kind == PICTURE
     val isPinned get() = revision.length == 40 && files.isNotEmpty() && files.all { it.sha256.length == 64 }
     val totalBytes get() = files.sumOf { it.size }
     /** The language model weights. */
     val weights get() = files.first { !it.isVision }
     /** The vision projector, for models that read photos. */
     val projector get() = files.firstOrNull { it.isVision }
-    val vision get() = projector != null
+    val vision get() = projector != null && !paints
+    companion object { const val PICTURE = "picture" }
     fun url(file: ModelFile) = "https://huggingface.co/$repository/resolve/$revision/${file.path}"
 }
 
@@ -57,7 +61,8 @@ data class ModelFile(val path: String, val size: Long, val sha256: String) {
  * Unpinned manifests are refused.
  */
 class ModelDownloader(private val directory: File) {
-    fun folder(manifest: ModelManifest) = File(directory, manifest.id)
+    /** One folder per model; a shared model's id ("hf.owner/name") becomes "hf.owner--name". */
+    fun folder(manifest: ModelManifest) = File(directory, folderName(manifest.id))
     fun file(manifest: ModelManifest, file: ModelFile) = File(folder(manifest), file.path)
     private fun marker(manifest: ModelManifest, file: ModelFile) = File(file(manifest, file).path + ".ok")
 
@@ -65,7 +70,7 @@ class ModelDownloader(private val directory: File) {
 
     /** Removes model folders that no manifest uses any more (for example an older model choice). */
     fun sweep(keep: Collection<ModelManifest>) {
-        val ids = keep.map { it.id }.toSet()
+        val ids = keep.map { folderName(it.id) }.toSet()
         directory.listFiles()?.filter { it.isDirectory && it.name !in ids }?.forEach { it.deleteRecursively() }
     }
 
@@ -209,6 +214,7 @@ class ModelDownloader(private val directory: File) {
     }
 
     companion object {
+        fun folderName(id: String) = id.replace("/", "--")
         const val PIECE = 128L * 1024 * 1024
         private const val CONNECTIONS = 6
 

@@ -279,7 +279,7 @@ fun ErrandScreen(state: UiState, vm: ChatViewModel, openPersonas: () -> Unit, op
     Box(Modifier.fillMaxSize().background(ink.paper)) {
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
-                ModelSelector(state.models, state.modelId, vm::chooseModel, disabled = state.anyWork, dimmed = !state.modelReady)
+                ModelSelector(state.models.filter { !it.paints }, state.model.id, vm::chooseModel, disabled = state.anyWork, dimmed = !state.modelReady)
             }
             // The stage: the bot, and what it says.
             Column(

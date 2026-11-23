@@ -28,6 +28,8 @@ import app.loocal.domain.Role
 import app.loocal.inference.LibraryError
 import app.loocal.inference.LlamaEngine
 import app.loocal.inference.ModelLibrary
+import app.loocal.inference.PaintInfo
+import app.loocal.inference.Painter
 import app.loocal.inference.ModelDownloader
 import app.loocal.inference.ModelManifest
 import app.loocal.inference.PhotoInput
@@ -76,7 +78,11 @@ data class PendingPhoto(val name: String, val width: Int, val height: Int)
 const val MAX_REPLIES = 3
 
 /** One reply being written in a chat. */
-data class Writing(val replyId: String, val text: String = "", val tools: List<ToolUse> = emptyList(), val phase: String = "", val tokens: Int = 0)
+data class Writing(
+    val replyId: String, val text: String = "", val tools: List<ToolUse> = emptyList(), val phase: String = "", val tokens: Int = 0,
+    /** A picture being painted instead of words, and how far it has got (steps done of all). */
+    val paint: PaintInfo? = null, val paintDone: Int = 0, val paintTotal: Int = 0,
+)
 
 data class UiState(
     val chat: Chat = Chat(),
@@ -121,10 +127,22 @@ data class UiState(
     val addingModel: String? = null,
     /** The model just shared: Settings › Models opens on it and it's marked a moment. */
     val revealedModel: String? = null,
+    /** A picture model picked in the carousel: the chat paints instead of answering. */
+    val paintModelId: String? = null,
+    /** A picture just finished on screen: brushed in once. */
+    val freshPainting: String? = null,
 ) {
-    val model get() = models.firstOrNull { it.id == modelId } ?: models.first()
-    val modelReady get() = model.id in ready
-    val download get() = downloads[model.id] ?: DownloadStatus()
+    val model get() = models.firstOrNull { it.id == modelId && !it.paints } ?: models.first()
+    /** The picture model while painting, else null. */
+    val painter get() = models.firstOrNull { it.id == paintModelId && it.paints }
+    val isPainting get() = painter != null
+    /** The carousel's pick: the picture model while painting, the chat model otherwise. */
+    val carouselId get() = painter?.id ?: model.id
+    /** Painting needs the picture model; chatting needs the chat model. */
+    val modelReady get() = (painter ?: model).id in ready
+    /** What the composer needs downloaded: the picture model while painting, else the chat model. */
+    val composerModel get() = painter ?: model
+    val download get() = downloads[composerModel.id] ?: DownloadStatus()
     private val here get() = writing[chat.id]
     /** Id of this chat's reply being written. */
     val generatingId get() = here?.replyId
@@ -134,6 +152,10 @@ data class UiState(
     val phase get() = here?.phase.orEmpty()
     /** Boxes of the reply being written (sources, tools, actions). */
     val streamingTools get() = here?.tools.orEmpty()
+    /** The picture this chat is painting, and how far it has got. */
+    val paintingNow get() = here?.paint
+    val paintDone get() = here?.paintDone ?: 0
+    val paintTotal get() = here?.paintTotal ?: 0
     /** This chat is being answered. Other chats can still be opened and written in. */
     val isBusy get() = chat.id in writing
     /** The model has work: a reply in any chat, or an errand. */
@@ -141,7 +163,8 @@ data class UiState(
     /** What sits with the bot: errands on the go (oldest first), then today's unseen results. Four at most. */
     val crew get() = (runs.filter { it.isActive }.reversed() + runs.filter { !it.isActive && !it.seen && it.startedAt > System.currentTimeMillis() - 12 * 3600_000L }).take(ErrandStore.CREW_SIZE)
     val errandPersona get() = personas.firstOrNull { it.id == errandPersonaId }
-    val canSend get() = modelReady && !isBusy && writing.size < MAX_REPLIES && !preparingPhoto && (draft.isNotBlank() || photo != null || files.isNotEmpty())
+    val canSend get() = modelReady && !isBusy && writing.size < MAX_REPLIES && !preparingPhoto &&
+        (if (isPainting) IslandText.stripped(draft).isNotBlank() else draft.isNotBlank() || photo != null || files.isNotEmpty())
     val persona get() = personas.firstOrNull { it.id == personaId }
     val isTemporary get() = chat.isTemporary
     val connectors get() = Connector.BUILT_IN + servers.map(Connector::mcp)
@@ -178,7 +201,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
             personas = store.loadPersonas(),
             personaId = prefs.getString("persona", null),
             models = models,
-            modelId = prefs.getString("model", null)?.takeIf { id -> models.any { it.id == id } } ?: "qwen3-vl-8b",
+            modelId = prefs.getString("model", null)?.takeIf { id -> models.any { it.id == id && !it.paints } } ?: "qwen3-vl-8b",
+            paintModelId = prefs.getString("model.paint", null)?.takeIf { id -> models.any { it.id == id && it.paints } },
             ready = models.filter { downloader.isReady(it) }.map { it.id }.toSet(),
             appearance = runCatching { Appearance.valueOf(prefs.getString("appearance", "SYSTEM")!!) }.getOrDefault(Appearance.SYSTEM),
             activeConnectors = activeConnectorsAtLaunch(),
@@ -284,7 +308,13 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun chooseModel(id: String) {
         if (_state.value.anyWork) return
-        prefs.edit().putString("model", id).apply()
+        if (models.firstOrNull { it.id == id }?.paints == true) {
+            prefs.edit().putString("model.paint", id).apply()
+            _state.update { it.copy(paintModelId = id) }
+            return
+        }
+        prefs.edit().putString("model", id).remove("model.paint").apply()
+        _state.update { it.copy(paintModelId = null) }
         // A text-only model can't take the photo waiting in the composer.
         _state.update { s -> s.copy(modelId = id, photo = if (models.first { it.id == id }.vision) s.photo else null.also { s.photo?.let { p -> photos.delete(listOf(p.name)) } }) }
     }
@@ -328,7 +358,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // MARK: Models
 
-    fun downloadModel(id: String = _state.value.modelId) {
+    fun downloadModel(id: String = _state.value.carouselId) {
         if (downloadJobs[id]?.isActive == true) return
         val manifest = models.first { it.id == id }
         if (!onWifi()) {
@@ -387,6 +417,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     /** Takes a shared model off the list and deletes whatever of it was downloaded. The three built-in models stay. */
     fun removeModel(id: String) {
         val model = shared.firstOrNull { it.id == id } ?: return
+        if (_state.value.paintModelId == id) { prefs.edit().remove("model.paint").apply(); _state.update { it.copy(paintModelId = null) } }
         if (_state.value.anyWork) { _state.update { it.copy(notice = "Wait for the replies being written to finish, then remove ${model.name}.") }; return }
         downloadJobs[id]?.cancel()
         engine.unload()
@@ -598,6 +629,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     fun send() {
         val s = _state.value
         if (!s.canSend) return
+        s.painter?.let { painter -> paint(IslandText.stripped(s.draft).trim(), painter); return }
         val prompt = s.draft.trim()
         val islands = IslandText.present(prompt, s.draftIslands)
         if (PromptBuilder.isPromptTooLong(prompt)) {
@@ -644,6 +676,103 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         val id = _state.value.chat.id
         jobs[id]?.let { it.cancel(); return }
         errandJobs.values.toList().forEach { it.cancel() }
+    }
+
+    // MARK: Painting
+
+    private val painter = Painter()
+
+    /** Paints the prompt with the picked picture model, as a reply in the chat. */
+    private fun paint(prompt: String, model: ModelManifest) {
+        if (prompt.isEmpty()) return
+        val chatId = _state.value.chat.id
+        val replyId = java.util.UUID.randomUUID().toString()
+        val info = PaintInfo(prompt, Painter.SIDE, Painter.SIDE, model.name)
+        _state.update { it.copy(draft = "", draftIslands = emptyList(), photo = null, files = emptyList(), chat = it.chat.appending(Message(role = Role.USER, text = prompt))) }
+        persist()
+        _state.update { it.copy(writing = it.writing + (chatId to Writing(replyId, paint = info, phase = "Waiting its turn")), performance = "", error = null) }
+        jobs[chatId] = viewModelScope.launch {
+            var name: String? = null
+            var stopped = false
+            val started = System.nanoTime()
+            try {
+                // No chat model loads while a picture is painted: replies already writing finish first.
+                engineTurn.withLock {
+                    engine.unload()
+                    writingIn(chatId) { it.copy(phase = "Loading ${model.name}") }
+                    val needed = downloader.file(model, model.weights).length() + 1500L * 1024 * 1024
+                    if (needed > totalMemory * 0.75) error("${model.name} needs more memory than this phone has.")
+                    val picture = painter.paint(downloader.file(model, model.weights).path, model.id, prompt) { done, total ->
+                        writingIn(chatId) { it.copy(paintDone = done, paintTotal = total, phase = if (done < total) "Painting · step ${done + 1} of $total" else "Finishing") }
+                    }
+                    name = withContext(Dispatchers.IO) { photos.savePainting(picture, _state.value.chats.firstOrNull { it.id == chatId }?.isTemporary ?: _state.value.chat.isTemporary) }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                stopped = true
+            } catch (e: Throwable) {
+                _state.update { it.copy(error = e.message ?: "The picture couldn’t be painted.") }
+            } finally {
+                val seconds = (System.nanoTime() - started) / 1e9
+                finishPainting(chatId, replyId, info, name, stopped, if (name != null) "Painted in ${"%.1f".format(seconds)} s · ${freeMegabytes()} MB free" else "")
+            }
+        }
+    }
+
+    /** Saves a painted picture to the phone's Pictures/Loocal album (no permission needed on Android 10+). */
+    fun savePaintingToPhotos(file: java.io.File) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val saved = runCatching {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "Loocal ${System.currentTimeMillis()}.png")
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Loocal")
+                }
+                val resolver = app.contentResolver
+                val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)!!
+                resolver.openOutputStream(uri)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
+            }.isSuccess
+            _state.update { it.copy(notice = if (saved) "Saved to Pictures › Loocal." else null, error = if (saved) null else "The picture couldn’t be saved.") }
+        }
+    }
+
+    /** Debug: paints one picture with the first downloaded picture model, logging time and memory. */
+    fun benchmarkPaint() {
+        val model = models.firstOrNull { it.paints && downloader.isReady(it) } ?: run { android.util.Log.i("LoocalPaint", "no picture model ready"); return }
+        viewModelScope.launch {
+            val start = System.nanoTime()
+            android.util.Log.i("LoocalPaint", "model ${model.name} free=${freeMegabytes()}MB")
+            runCatching {
+                engineTurn.withLock {
+                    engine.unload()
+                    painter.paint(downloader.file(model, model.weights).path, model.id, "a calm mountain lake at dawn, impressionist oil painting", seed = 7) { done, total ->
+                        android.util.Log.i("LoocalPaint", "step $done/$total at ${"%.1f".format((System.nanoTime() - start) / 1e9)}s free=${freeMegabytes()}MB")
+                    }
+                }
+            }.onSuccess { bitmap ->
+                val name = withContext(Dispatchers.IO) { photos.savePainting(bitmap, false) }
+                android.util.Log.i("LoocalPaint", "ok ${bitmap.width}x${bitmap.height} in ${"%.1f".format((System.nanoTime() - start) / 1e9)}s saved $name")
+            }.onFailure { android.util.Log.i("LoocalPaint", "failed ${it.message}") }
+        }
+    }
+
+    private fun finishPainting(chatId: String, id: String, info: PaintInfo, image: String?, stopped: Boolean, performance: String) {
+        jobs.remove(chatId)
+        var finished: Chat? = null
+        _state.update { s ->
+            val onScreen = s.chat.id == chatId
+            val base = if (onScreen) s.chat else s.chats.firstOrNull { it.id == chatId }
+            val chat = if (base == null || image == null) base else base.appending(Message(id = id, role = Role.ASSISTANT, text = "", imageName = image, imageWidth = info.width, imageHeight = info.height, paint = info))
+            finished = chat
+            s.copy(
+                freshPainting = if (onScreen && image != null) id else s.freshPainting,
+                chat = if (onScreen && chat != null) chat else s.chat, writing = s.writing - chatId,
+                performance = if (onScreen) performance else s.performance,
+                notice = if (stopped) "Painting stopped." else s.notice,
+            )
+        }
+        finished?.let { store.save(it) }
+        _state.update { it.copy(chats = store.loadChats()) }
+        pumpErrands()
     }
 
     private fun reply() {
