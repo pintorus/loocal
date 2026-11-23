@@ -120,8 +120,8 @@ fun LoocalApp(vm: ChatViewModel, requested: String? = null, consumeRequest: () -
                     enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    // Sits low, like Soma: tucked toward the gesture bar.
-                    Box(Modifier.fillMaxWidth().background(ink.paper).padding(top = 6.dp).offset(y = 4.dp), contentAlignment = Alignment.Center) {
+                    // Clear of the gesture bar, with room under it.
+                    Box(Modifier.fillMaxWidth().background(ink.paper).padding(top = 6.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
                         DestinationBar(tab, remembered, ::choose, flip = { space -> go(remembered[space] ?: Tab.entries[space * 3 + 1]) })
                     }
                 }

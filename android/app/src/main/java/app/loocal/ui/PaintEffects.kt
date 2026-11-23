@@ -84,25 +84,78 @@ class SplitMix(seed: Long) {
     fun unit(): Float = ((next() ushr 11).toDouble() / (1L shl 53).toDouble()).toFloat()
 }
 
-/** Wet, flowing paint: the colours blend round the palette continuously, drifting slowly. */
-@Composable
-fun liquidPaintBrush(): Brush {
-    val t by rememberInfiniteTransition(label = "liquid").animateFloat(0f, 1f, infiniteRepeatable(tween(7000, easing = LinearEasing), RepeatMode.Restart), label = "t")
-    return remember(t) {
-        object : androidx.compose.ui.graphics.ShaderBrush() {
-            override fun createShader(size: Size): android.graphics.Shader {
-                val a = t * 2 * PI.toFloat()
-                val c = Offset(size.width / 2, size.height / 2)
-                val r = size.width / 2
-                val from = c + Offset(cos(a) * r, sin(a) * size.height)
-                val to = c - Offset(cos(a) * r, sin(a) * size.height)
-                val cols = (PaintColors + PaintColors.first()).map { c: Color -> c.toArgb() }.toIntArray()
-                return android.graphics.LinearGradient(from.x, from.y, to.x, to.y, cols, null, android.graphics.Shader.TileMode.MIRROR)
-            }
-        }
+/** The selector's wet paint: rose, tangerine, violet, sky, yolk. */
+private val Wet = listOf(Color(1f, 0.24f, 0.5f), Color(1f, 0.55f, 0.2f), Color(0.55f, 0.36f, 1f), Color(0.2f, 0.78f, 1f), Color(1f, 0.82f, 0.25f))
+
+/** Each mesh point glides round the palette at its own pace, blending continuously: the loop never jumps. */
+private fun meshColor(i: Int, t: Double): Color {
+    val speed = 0.11 + (i % 4) * 0.025
+    val position = ((i * 0.37 + t * speed) % 1.0) * Wet.size
+    val a = Wet[position.toInt() % Wet.size]; val b = Wet[(position.toInt() + 1) % Wet.size]
+    val f = (position - kotlin.math.floor(position)).toFloat()
+    return androidx.compose.ui.graphics.lerp(a, b, f * f * (3 - 2 * f))
+}
+
+/** The 3 x 3 mesh's points (0…1), drifting slowly like the iOS MeshGradient. */
+private fun meshPoint(i: Int, t: Double): Offset {
+    fun w(speed: Double, offset: Double, amount: Float) = sin(t * speed + offset).toFloat() * amount
+    return when (i) {
+        0 -> Offset(0f, 0f); 1 -> Offset(0.5f + w(0.8, 0.0, 0.2f), 0f); 2 -> Offset(1f, 0f)
+        3 -> Offset(0f, 0.5f + w(1.1, 1.0, 0.25f)); 4 -> Offset(0.5f + w(0.7, 2.0, 0.3f), 0.5f + w(0.9, 3.0, 0.3f)); 5 -> Offset(1f, 0.5f + w(1.3, 4.0, 0.25f))
+        6 -> Offset(0f, 1f); 7 -> Offset(0.5f + w(0.6, 5.0, 0.2f), 1f); else -> Offset(1f, 1f)
     }
 }
 
+/**
+ * A capsule whose outline swells and sinks in a few slow, soft lobes travelling round it: a drop
+ * of paint holding its shape, not a ragged edge (iOS `WetEdge`).
+ */
+fun wetEdge(size: Size, phase: Double): Path {
+    val r = size.height / 2
+    val samples = 160
+    val straight = maxOf(size.width - 2 * r, 0f)
+    val perimeter = 2 * straight + 2 * PI.toFloat() * r
+    val path = Path()
+    for (i in 0 until samples) {
+        val s = i / samples.toFloat() * perimeter
+        val u = s / perimeter * 2 * PI
+        var x: Float; var y: Float; val nx: Float; val ny: Float
+        when {
+            s < straight -> { x = r + s; y = 0f; nx = 0f; ny = -1f }
+            s < straight + PI.toFloat() * r -> { val a = -PI.toFloat() / 2 + (s - straight) / r; x = size.width - r + cos(a) * r; y = r + sin(a) * r; nx = cos(a); ny = sin(a) }
+            s < 2 * straight + PI.toFloat() * r -> { x = size.width - r - (s - straight - PI.toFloat() * r); y = size.height; nx = 0f; ny = 1f }
+            else -> { val a = PI.toFloat() / 2 + (s - 2 * straight - PI.toFloat() * r) / r; x = r + cos(a) * r; y = r + sin(a) * r; nx = cos(a); ny = sin(a) }
+        }
+        // Three and five lobes, drifting opposite ways: round bulges, always smooth.
+        val swell = (1.7 * sin(3 * u + phase * 0.9) + 0.9 * sin(5 * u - phase * 1.3) - 1.0).toFloat() * 1.6f
+        x += nx * swell; y += ny * swell
+        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
+    path.close()
+    return path
+}
+
+/** Wet, flowing paint in a soft blob of a capsule, as if it was just poured on (iOS `LiquidPaint`). */
+@Composable
+fun Modifier.liquidPaint(opacity: Float = 1f): Modifier {
+    var t by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) { val start = withFrameNanos { it }; while (true) withFrameNanos { t = (it - start) / 1e9f + 1000f } }
+    return drawBehind {
+        val time = t.toDouble()
+        clipPath(wetEdge(size, time)) {
+            // The mesh: a base wash, then each point's colour spread softly from where it drifts to.
+            drawRect(meshColor(4, time), alpha = opacity)
+            for (i in 0 until 9) {
+                val p = meshPoint(i, time)
+                val c = Offset(p.x * size.width, p.y * size.height)
+                drawRect(Brush.radialGradient(listOf(meshColor(i, time), meshColor(i, time).copy(alpha = 0f)), c, size.width * 0.42f), alpha = opacity)
+            }
+            // A sheen sliding along, like light on a wet coat.
+            val sx = size.width / 2 + sin(time * 0.9).toFloat() * 80.dp.toPx() / 2
+            drawRect(Brush.horizontalGradient(listOf(Color.White.copy(alpha = 0f), Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0f)), sx - 20.dp.toPx(), sx + 20.dp.toPx()), alpha = opacity)
+        }
+    }
+}
 
 // MARK: The painter's page
 
