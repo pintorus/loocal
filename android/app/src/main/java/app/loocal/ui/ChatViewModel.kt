@@ -206,6 +206,8 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
         // Model folders no model uses any more, temporary photos, and photos no saved chat refers to.
         viewModelScope.launch(Dispatchers.IO) {
             downloader.sweep(models)
+            // A download that reached its last byte but was never verified is finished without fetching again.
+            downloader.finishVerified(models).takeIf { it.isNotEmpty() }?.let { done -> _state.update { it.copy(ready = it.ready + done.map { m -> m.id }) } }
             photos.sweep(_state.value.chats.flatMap { c -> c.messages.mapNotNull { it.imageName } }.toSet())
         }
     }
