@@ -26,7 +26,15 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:windowSoftInputMode="adjustResize" />
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Share a Hugging Face model page to Loocal to add the model. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
         <!-- Two launcher entries, one per app icon (Settings › Appearance › App icon); only one is enabled at a time. -->
         <activity-alias
             android:name=".LoopIcon"

@@ -28,6 +28,10 @@ data class ModelManifest(
     val repository: String,
     val revision: String,
     val files: List<ModelFile>,
+    /** Billions of parameters, for ordering small → large. */
+    val parameters: Double = 0.0,
+    /** Shared from Hugging Face, so it can be removed again. */
+    val custom: Boolean = false,
 ) {
     val isPinned get() = revision.length == 40 && files.isNotEmpty() && files.all { it.sha256.length == 64 }
     val totalBytes get() = files.sumOf { it.size }

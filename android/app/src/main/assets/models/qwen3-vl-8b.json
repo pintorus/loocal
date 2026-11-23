@@ -2,6 +2,7 @@
   "id": "qwen3-vl-8b",
   "name": "Qwen3 VL 8B",
   "detail": "Balanced · words and vision",
+  "parameters": 8,
   "repository": "noctrex/Huihui-Qwen3-VL-8B-Instruct-abliterated-GGUF",
   "revision": "97426eb428c5c67d117aaba47d924af9209ee824",
   "files": [

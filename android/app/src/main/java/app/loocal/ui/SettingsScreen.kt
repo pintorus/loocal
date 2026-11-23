@@ -39,6 +39,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.outlined.Contrast
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.TheaterComedy
@@ -344,27 +348,64 @@ private fun Subpage(title: String, back: () -> Unit, content: @Composable () -> 
 
 @Composable
 private fun ModelsPage(state: UiState, vm: ChatViewModel) {
+    // The model just shared stays marked a moment, then the mark fades.
+    androidx.compose.runtime.LaunchedEffect(state.revealedModel) {
+        if (state.revealedModel != null) { kotlinx.coroutines.delay(2500); vm.revealed() }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Column(Modifier.fillMaxWidth().border(1.dp, ink.hairline, RoundedCornerShape(22.dp))) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).border(1.dp, ink.hairline, RoundedCornerShape(22.dp)).animateContentSize()) {
             state.models.forEachIndexed { i, model ->
-                ModelRow(state, model, vm)
-                if (i < state.models.lastIndex) Hairline(Modifier.padding(start = 20.dp))
+                androidx.compose.runtime.key(model.id) {
+                    SwipeToRemove(enabled = model.custom, remove = { vm.removeModel(model.id) }) {
+                        ModelRow(state, model, vm, revealed = state.revealedModel == model.id)
+                    }
+                }
+                if (i < state.models.lastIndex || state.addingModel != null) Hairline(Modifier.padding(start = 20.dp))
+            }
+            state.addingModel?.let { adding ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                    SpiralLoader(16.dp)
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Adding model", style = geist(16, FontWeight.Medium, ink.primary))
+                        Text(adding, style = geist(13, color = ink.secondary), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
-        Text("Models download once, then run offline on this phone. Smaller ones answer faster. Long-press a downloaded model to remove it.", style = geist(13, color = ink.tertiary), modifier = Modifier.padding(horizontal = 4.dp))
+        Text("Models download once, then run offline on this phone. Smaller ones answer faster. Long-press a downloaded model to remove it. To add one, share its Hugging Face page to Loocal.", style = geist(13, color = ink.tertiary), modifier = Modifier.padding(horizontal = 4.dp))
     }
+}
+
+/** Swipe a shared model left to remove it, like a chat in History. */
+@Composable
+private fun SwipeToRemove(enabled: Boolean, remove: () -> Unit, content: @Composable () -> Unit) {
+    if (!enabled) return content()
+    val swipe = androidx.compose.material3.rememberSwipeToDismissBoxState(confirmValueChange = { value ->
+        if (value == androidx.compose.material3.SwipeToDismissBoxValue.EndToStart) { remove(); true } else value == androidx.compose.material3.SwipeToDismissBoxValue.Settled
+    })
+    androidx.compose.material3.SwipeToDismissBox(
+        state = swipe,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Box(contentAlignment = Alignment.CenterEnd, modifier = Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color(0xFFFF3B30)).padding(horizontal = 24.dp)) {
+                Icon(Icons.Outlined.Delete, "Remove", tint = androidx.compose.ui.graphics.Color.White)
+            }
+        },
+    ) { content() }
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun ModelRow(state: UiState, model: app.loocal.inference.ModelManifest, vm: ChatViewModel) {
+private fun ModelRow(state: UiState, model: app.loocal.inference.ModelManifest, vm: ChatViewModel, revealed: Boolean = false) {
     val selected = state.modelId == model.id
     val ready = model.id in state.ready
     val download = state.downloads[model.id] ?: DownloadStatus()
     val size = android.text.format.Formatter.formatShortFileSize(LocalContext.current, model.totalBytes)
     var confirmDelete by remember { mutableStateOf(false) }
     val ring by animateDpAsState(if (selected) 5.5.dp else 1.5.dp, spring(dampingRatio = 0.7f, stiffness = 500f), label = "ring")
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+    val mark by androidx.compose.animation.animateColorAsState(if (revealed) ink.fill else ink.paper, androidx.compose.animation.core.tween(600), label = "mark")
+    val tooBig = remember(model.id) { app.loocal.inference.ModelLibrary.mayNotFit(model, vm.totalMemory) }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.background(mark).padding(horizontal = 16.dp, vertical = 14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -375,7 +416,10 @@ private fun ModelRow(state: UiState, model: app.loocal.inference.ModelManifest, 
             ) {
                 Box(Modifier.size(18.dp).border(ring, if (selected) ink.primary else ink.hairline, CircleShape))
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(model.name, style = geist(16, FontWeight.Medium, ink.primary))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(model.name, style = geist(16, FontWeight.Medium, ink.primary), maxLines = 1)
+                        if (tooBig) Icon(Icons.Filled.Warning, "May be too big for this phone", tint = androidx.compose.ui.graphics.Color(0xFFFF9500), modifier = Modifier.size(13.dp))
+                    }
                     Text("${model.detail} · $size", style = geist(13, color = ink.secondary))
                 }
             }

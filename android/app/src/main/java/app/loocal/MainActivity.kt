@@ -18,13 +18,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
-        requested.value = intent.data?.host
+        requested.value = route(intent)
+    }
+
+    /** A launcher shortcut's page, or a Hugging Face link shared to Loocal (Settings › Models opens on it). */
+    private fun route(intent: android.content.Intent?): String? {
+        if (intent?.action == android.content.Intent.ACTION_SEND) {
+            val text = intent.getStringExtra(android.content.Intent.EXTRA_TEXT) ?: return null
+            return if (vm.addModel(text)) "models" else null
+        }
+        return intent?.data?.host
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        requested.value = intent?.data?.host
+        if (savedInstanceState == null) requested.value = route(intent)
         setContent {
             // Status and gesture bars follow the page: dark icons on paper, light ones on ink.
             LoocalApp(vm, requested.value, { requested.value = null }) { isDark ->

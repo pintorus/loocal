@@ -2,6 +2,7 @@
   "id": "gemma-3-12b",
   "name": "Gemma 3 12B",
   "detail": "Deepest · words only",
+  "parameters": 12,
   "repository": "bartowski/mlabonne_gemma-3-12b-it-abliterated-GGUF",
   "revision": "7cb19be8d7c1ee4dfcb9d8f7b779be240bf5bf39",
   "files": [

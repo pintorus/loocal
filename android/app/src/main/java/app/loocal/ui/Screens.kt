@@ -68,7 +68,7 @@ fun LoocalApp(vm: ChatViewModel, requested: String? = null, consumeRequest: () -
     var remembered by remember { mutableStateOf(mapOf(0 to Tab.CHAT, 1 to Tab.ERRAND)) }
     fun go(destination: Tab) { remembered = remembered + (destination.space to destination); tab = destination }
     androidx.compose.runtime.LaunchedEffect(requested) {
-        when (requested) { "chat" -> { vm.newChat(); go(Tab.CHAT) }; "errand" -> go(Tab.ERRAND); "results" -> go(Tab.RESULTS) }
+        when (requested) { "chat" -> { vm.newChat(); go(Tab.CHAT) }; "errand" -> go(Tab.ERRAND); "results" -> go(Tab.RESULTS); "models" -> { settingsPage = SettingsPage.MODELS; go(Tab.SETTINGS) } }
         if (requested != null) consumeRequest()
     }
     // Routines whose time came while Loocal was open run without waiting for a relaunch.

@@ -25,7 +25,9 @@ import app.loocal.domain.PhotoStore
 import app.loocal.domain.PreparedPrompt
 import app.loocal.domain.PromptBuilder
 import app.loocal.domain.Role
+import app.loocal.inference.LibraryError
 import app.loocal.inference.LlamaEngine
+import app.loocal.inference.ModelLibrary
 import app.loocal.inference.ModelDownloader
 import app.loocal.inference.ModelManifest
 import app.loocal.inference.PhotoInput
@@ -115,6 +117,10 @@ data class UiState(
     val appearance: Appearance = Appearance.SYSTEM,
     val error: String? = null,
     val notice: String? = null,
+    /** A Hugging Face model being looked up after it was shared. */
+    val addingModel: String? = null,
+    /** The model just shared: Settings › Models opens on it and it's marked a moment. */
+    val revealedModel: String? = null,
 ) {
     val model get() = models.firstOrNull { it.id == modelId } ?: models.first()
     val modelReady get() = model.id in ready
@@ -147,9 +153,15 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("loocal", Context.MODE_PRIVATE)
     private val downloader = ModelDownloader(app.filesDir.resolve("models"))
     private val json = Json { ignoreUnknownKeys = true }
-    private val models: List<ModelManifest> = listOf("qwen3-vl-4b", "qwen3-vl-8b", "gemma-3-12b").map { id ->
+    private val builtIn: List<ModelManifest> = listOf("qwen3-vl-4b", "qwen3-vl-8b", "gemma-3-12b").map { id ->
         app.assets.open("models/$id.json").bufferedReader().use { json.decodeFromString(ModelManifest.serializer(), it.readText()) }
     }
+    /** Models shared to Loocal from Hugging Face, on top of the three built in. */
+    private val sharedFile = app.filesDir.resolve("shared-models.json")
+    private var shared: List<ModelManifest> = ModelLibrary.load(sharedFile)
+        set(value) { field = value; ModelLibrary.save(value, sharedFile) }
+    /** Every model, small → large: Settings › Models and the carousel. */
+    private val models get() = ModelLibrary.ordered(builtIn + shared)
     private val tools = ToolStore(app)
     private val desk = ErrandStore(app.filesDir)
     private val secrets = SecretStore(app)
@@ -338,6 +350,54 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelDownload(id: String) { downloadJobs[id]?.cancel() }
+
+    /** Physical memory, for marking models likely too big for this phone. */
+    val totalMemory: Long = runCatching {
+        android.app.ActivityManager.MemoryInfo().also { app.getSystemService(android.app.ActivityManager::class.java).getMemoryInfo(it) }.totalMem
+    }.getOrDefault(0L)
+
+    /**
+     * A link shared to Loocal: a Hugging Face model page joins the models, not downloaded yet.
+     * Returns false when the text holds no link at all.
+     */
+    fun addModel(text: String): Boolean {
+        val link = ModelLibrary.link(text) ?: return false
+        val repository = runCatching { ModelLibrary.repository(link) }.getOrElse { e -> _state.update { it.copy(error = e.message) }; return true }
+        models.firstOrNull { it.id == "hf." + repository.lowercase() || it.repository.equals(repository, ignoreCase = true) }?.let { known ->
+            _state.update { it.copy(revealedModel = known.id, notice = "${known.name} is already in your models.") }
+            return true
+        }
+        if (_state.value.addingModel != null) return true
+        _state.update { it.copy(addingModel = repository) }
+        viewModelScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { ModelLibrary.fetch(repository) } }
+            result.onSuccess { model ->
+                if (models.none { it.id == model.id }) shared = shared + model
+                _state.update { it.copy(models = models, addingModel = null, revealedModel = model.id) }
+            }.onFailure { e ->
+                val message = if (e is LibraryError) e.message else "Hugging Face couldn’t be reached. Check your connection and share the model again."
+                _state.update { it.copy(addingModel = null, error = message) }
+            }
+        }
+        return true
+    }
+
+    fun revealed() = _state.update { it.copy(revealedModel = null) }
+
+    /** Takes a shared model off the list and deletes whatever of it was downloaded. The three built-in models stay. */
+    fun removeModel(id: String) {
+        val model = shared.firstOrNull { it.id == id } ?: return
+        if (_state.value.anyWork) { _state.update { it.copy(notice = "Wait for the replies being written to finish, then remove ${model.name}.") }; return }
+        downloadJobs[id]?.cancel()
+        engine.unload()
+        downloader.delete(model)
+        shared = shared - model
+        _state.update { s ->
+            val id0 = if (s.modelId == id) "qwen3-vl-8b" else s.modelId
+            if (id0 != s.modelId) prefs.edit().putString("model", id0).apply()
+            s.copy(models = models, modelId = id0, ready = s.ready - id, downloads = s.downloads - id)
+        }
+    }
 
     fun deleteModel(id: String) {
         if (_state.value.anyWork && id == _state.value.modelId) return
