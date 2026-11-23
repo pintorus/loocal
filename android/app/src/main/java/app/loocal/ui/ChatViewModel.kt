@@ -682,6 +682,21 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private val painter = Painter()
 
+    /**
+     * A tiny decoder (TAESD, MIT, madebyollin/taesd, bundled) turns the finished latents into the
+     * picture in seconds instead of nearly a minute, with practically the same result. It fits
+     * SD 1.x and 2.x; SDXL models keep their own decoder.
+     */
+    private fun paintOptions(model: ModelManifest): Map<String, String> {
+        if ("xl" in model.id) return emptyMap()
+        val file = app.filesDir.resolve("paint/taesd.safetensors")
+        if (!file.exists()) runCatching {
+            file.parentFile?.mkdirs()
+            app.assets.open("paint/taesd.safetensors").use { input -> file.outputStream().use { input.copyTo(it) } }
+        }.onFailure { file.delete(); return emptyMap() }
+        return mapOf("taesd_path" to file.path)
+    }
+
     /** Paints the prompt with the picked picture model, as a reply in the chat. */
     private fun paint(prompt: String, model: ModelManifest) {
         if (prompt.isEmpty()) return
@@ -702,7 +717,7 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
                     writingIn(chatId) { it.copy(phase = "Loading ${model.name}") }
                     val needed = downloader.file(model, model.weights).length() + 1500L * 1024 * 1024
                     if (needed > totalMemory * 0.75) error("${model.name} needs more memory than this phone has.")
-                    val picture = painter.paint(downloader.file(model, model.weights).path, model.id, prompt) { done, total ->
+                    val picture = painter.paint(downloader.file(model, model.weights).path, model.id, prompt, options = withContext(Dispatchers.IO) { paintOptions(model) }) { done, total ->
                         writingIn(chatId) { it.copy(paintDone = done, paintTotal = total, phase = if (done < total) "Painting · step ${done + 1} of $total" else "Finishing") }
                     }
                     name = withContext(Dispatchers.IO) { photos.savePainting(picture, _state.value.chats.firstOrNull { it.id == chatId }?.isTemporary ?: _state.value.chat.isTemporary) }
@@ -736,15 +751,16 @@ class ChatViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     /** Debug: paints one picture with the first downloaded picture model, logging time and memory. */
-    fun benchmarkPaint() {
+    fun benchmarkPaint(override: Map<String, String>? = null) {
         val model = models.firstOrNull { it.paints && downloader.isReady(it) } ?: run { android.util.Log.i("LoocalPaint", "no picture model ready"); return }
         viewModelScope.launch {
+            val options = override ?: withContext(Dispatchers.IO) { paintOptions(model) }
             val start = System.nanoTime()
-            android.util.Log.i("LoocalPaint", "model ${model.name} free=${freeMegabytes()}MB")
+            android.util.Log.i("LoocalPaint", "model ${model.name} options=$options free=${freeMegabytes()}MB")
             runCatching {
                 engineTurn.withLock {
                     engine.unload()
-                    painter.paint(downloader.file(model, model.weights).path, model.id, "a calm mountain lake at dawn, impressionist oil painting", seed = 7) { done, total ->
+                    painter.paint(downloader.file(model, model.weights).path, model.id, "a calm mountain lake at dawn, impressionist oil painting", seed = 7, options = options) { done, total ->
                         android.util.Log.i("LoocalPaint", "step $done/$total at ${"%.1f".format((System.nanoTime() - start) / 1e9)}s free=${freeMegabytes()}MB")
                     }
                 }

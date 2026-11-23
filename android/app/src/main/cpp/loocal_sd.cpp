@@ -54,7 +54,7 @@ std::string str(JNIEnv *env, jstring s) {
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_app_loocal_inference_Painter_nativeLoad(JNIEnv *env, jclass, jstring path, jint threads) {
+Java_app_loocal_inference_Painter_nativeLoad(JNIEnv *env, jclass, jstring path, jint threads, jobjectArray keys, jobjectArray values) {
     sd_set_log_callback(on_log, nullptr);
     sd_ctx_opt_t *opt = sd_ctx_opt_create();
     std::string model = str(env, path);
@@ -62,7 +62,14 @@ Java_app_loocal_inference_Painter_nativeLoad(JNIEnv *env, jclass, jstring path, 
     bool good = ok(sd_opt_set_string((sd_opt_t *) opt, "model_path", model.c_str()), "model_path")
         && ok(sd_opt_set_int((sd_opt_t *) opt, "n_threads", std::max(1, (int) threads)), "n_threads")
         && ok(sd_opt_set_bool((sd_opt_t *) opt, "enable_mmap", true), "enable_mmap")
-        && ok(sd_opt_set_bool((sd_opt_t *) opt, "flash_attn", true), "flash_attn")
+        && ok(sd_opt_set_bool((sd_opt_t *) opt, "flash_attn", true), "flash_attn");
+    // Extra options ("true"/"false" are booleans, anything else a string), e.g. a tiny decoder.
+    for (jsize i = 0; good && keys && i < env->GetArrayLength(keys); i++) {
+        std::string k = str(env, (jstring) env->GetObjectArrayElement(keys, i)), v = str(env, (jstring) env->GetObjectArrayElement(values, i));
+        good = v == "true" || v == "false" ? ok(sd_opt_set_bool((sd_opt_t *) opt, k.c_str(), v == "true"), k.c_str())
+                                           : ok(sd_opt_set_string((sd_opt_t *) opt, k.c_str(), v.c_str()), k.c_str());
+    }
+    good = good
         && ok(sd_ctx_create(opt, &ctx), "The picture model couldn't be loaded");
     sd_opt_free((sd_opt_t *) opt);
     return good ? reinterpret_cast<jlong>(ctx) : 0;

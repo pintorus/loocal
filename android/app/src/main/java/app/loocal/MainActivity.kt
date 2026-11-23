@@ -24,7 +24,7 @@ class MainActivity : ComponentActivity() {
     /** A launcher shortcut's page, or a Hugging Face link shared to Loocal (Settings › Models opens on it). */
     private fun route(intent: android.content.Intent?): String? {
         // Debug builds: `am start -n app.loocal/.MainActivity --ez benchPaint true` paints one picture and logs it.
-        if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 && intent?.getBooleanExtra("benchPaint", false) == true) { vm.benchmarkPaint(); return null }
+        if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 && intent?.getBooleanExtra("benchPaint", false) == true) { vm.benchmarkPaint(intent.getStringExtra("paintOptions")?.split(';')?.filter { '=' in it }?.associate { it.substringBefore('=') to it.substringAfter('=') }); return null }
         if (intent?.action == android.content.Intent.ACTION_SEND) {
             val text = intent.getStringExtra(android.content.Intent.EXTRA_TEXT) ?: return null
             return if (vm.addModel(text)) "models" else null

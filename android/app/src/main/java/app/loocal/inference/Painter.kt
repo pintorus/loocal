@@ -24,8 +24,8 @@ class Painter {
      * Paints [prompt] with the model at [path]. [step] hears each step (1-based). Cancelling the
      * coroutine stops the picture between steps.
      */
-    suspend fun paint(path: String, id: String, prompt: String, seed: Long = System.nanoTime() and 0x7fffffff, step: Listener): Bitmap = withContext(Dispatchers.Default) {
-        val handle = nativeLoad(path, Runtime.getRuntime().availableProcessors().coerceIn(2, 6))
+    suspend fun paint(path: String, id: String, prompt: String, seed: Long = System.nanoTime() and 0x7fffffff, options: Map<String, String> = emptyMap(), step: Listener): Bitmap = withContext(Dispatchers.Default) {
+        val handle = nativeLoad(path, Runtime.getRuntime().availableProcessors().coerceIn(2, 6), options.keys.toTypedArray(), options.values.toTypedArray())
         if (handle == 0L) throw IllegalStateException(nativeError().ifEmpty { "The picture model couldn't be loaded." })
         try {
             val (steps, cfg) = settings(id)
@@ -62,7 +62,7 @@ class Painter {
 
         init { System.loadLibrary("loocal_llama") }
 
-        @JvmStatic private external fun nativeLoad(path: String, threads: Int): Long
+        @JvmStatic private external fun nativeLoad(path: String, threads: Int, keys: Array<String>, values: Array<String>): Long
         @JvmStatic private external fun nativeFree(handle: Long)
         @JvmStatic private external fun nativeCancel(handle: Long)
         @JvmStatic private external fun nativeError(): String

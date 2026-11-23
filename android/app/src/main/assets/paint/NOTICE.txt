@@ -1,0 +1,2 @@
+taesd.safetensors: Tiny AutoEncoder for Stable Diffusion by Ollin Boer Bohan
+https://huggingface.co/madebyollin/taesd — MIT License.
